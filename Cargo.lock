@@ -946,7 +946,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "reflink-anchor"
+name = "reflink"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
