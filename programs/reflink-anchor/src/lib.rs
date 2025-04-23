@@ -7,7 +7,7 @@ pub mod reflink {
     use super::*;
 
     pub fn create_campaign(ctx: Context<CreateCampaign>, campaign_id: String) -> Result<()> {
-        let campaign = &mut ctx.accounts.campaign;
+        let campaign: &mut Account<'_, Campaign> = &mut ctx.accounts.campaign;
         campaign.merchant = ctx.accounts.merchant.key();
         campaign.campaign_id = campaign_id;
         Ok(())
@@ -18,7 +18,7 @@ pub mod reflink {
         event_type: String,
         metadata: String,
     ) -> Result<()> {
-        let record = &mut ctx.accounts.referral_record;
+        let record: &mut Account<'_, ReferralRecord> = &mut ctx.accounts.referral_record;
         record.referrer = ctx.accounts.referrer.key();
         record.customer = ctx.accounts.customer.key();
         record.event_type = event_type;
