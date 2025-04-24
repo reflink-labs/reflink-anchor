@@ -1,56 +1,117 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Reflink } from "../target/types/reflink";
-import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { assert } from "chai";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
 
 describe("reflink", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.Reflink as Program<Reflink>;
 
-  it("Create campaign and log referral", async () => {
-    const merchant = provider.wallet;
-    const campaignId = "campaign001";
+  const merchant = anchor.web3.Keypair.generate();
+  const referrer = anchor.web3.Keypair.generate();
+  const customer = anchor.web3.Keypair.generate();
+  const payer = provider.wallet;
 
-    const [campaignPda] = PublicKey.findProgramAddressSync(
+  const campaignId = "demo-campaign";
+  const referralRewardBps = 1000; // 10%
+  const conversionAmount = anchor.web3.LAMPORTS_PER_SOL;
+
+  let campaignPda: PublicKey;
+  let referralPda: PublicKey;
+  let campaignBump: number;
+  let referralBump: number;
+
+  it("Airdrops lamports to merchant and referrer", async () => {
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(
+        merchant.publicKey,
+        2 * conversionAmount
+      ),
+      "confirmed"
+    );
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(
+        referrer.publicKey,
+        1 * conversionAmount
+      ),
+      "confirmed"
+    );
+  });
+
+  it("Creates campaign with reward config", async () => {
+    [campaignPda, campaignBump] = await PublicKey.findProgramAddressSync(
       [Buffer.from("campaign"), merchant.publicKey.toBuffer()],
       program.programId
     );
 
     await program.methods
-      .createCampaign(campaignId)
+      .createCampaign(campaignId, referralRewardBps)
       .accounts({
         campaign: campaignPda,
         merchant: merchant.publicKey,
         systemProgram: SystemProgram.programId,
       })
+      .signers([merchant])
       .rpc();
 
-    const referrer = Keypair.generate();
-    const customer = Keypair.generate();
+    const campaign = await program.account.campaign.fetch(campaignPda);
+    assert.equal(campaign.campaignId, campaignId);
+    assert.equal(campaign.referralRewardBps, referralRewardBps);
+  });
 
-    const [referralRecordPda] = PublicKey.findProgramAddressSync(
+  it("Logs conversion and pays referrer", async () => {
+    [referralPda, referralBump] = await PublicKey.findProgramAddressSync(
       [
         Buffer.from("record"),
         campaignPda.toBuffer(),
         customer.publicKey.toBuffer(),
-        Buffer.from("purchase"),
+        Buffer.from("conversion"),
       ],
       program.programId
     );
 
+    const referrerBefore = await provider.connection.getBalance(
+      referrer.publicKey
+    );
+    const merchantBefore = await provider.connection.getBalance(
+      merchant.publicKey
+    );
+
     await program.methods
-      .logReferralEvent("purchase", "order123|amount:50")
+      .logConversion(
+        "conversion",
+        "some-metadata",
+        new anchor.BN(conversionAmount)
+      )
       .accounts({
-        referralRecord: referralRecordPda,
+        referralRecord: referralPda,
         campaign: campaignPda,
         referrer: referrer.publicKey,
         customer: customer.publicKey,
-        payer: merchant.publicKey,
+        merchant: merchant.publicKey,
+        payer: payer.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .rpc();
 
-    console.log("✅ Referral logged");
+    const referrerAfter = await provider.connection.getBalance(
+      referrer.publicKey
+    );
+    const merchantAfter = await provider.connection.getBalance(
+      merchant.publicKey
+    );
+
+    const referrerGain = referrerAfter - referrerBefore;
+    const merchantGain = merchantAfter - merchantBefore;
+
+    assert.equal(referrerGain, conversionAmount * 0.1);
+    assert.equal(merchantGain, conversionAmount * 0.9);
+
+    const record = await program.account.referralRecord.fetch(referralPda);
+    assert.equal(record.amount.toNumber(), conversionAmount);
+    assert.equal(record.eventType, "conversion");
+    assert.equal(record.metadata, "some-metadata");
   });
 });
