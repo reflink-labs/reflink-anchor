@@ -1,117 +1,114 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { Reflink } from "../target/types/reflink";
 import { assert } from "chai";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { Reflink } from "../target/types/reflink";
 
 describe("reflink", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
+
   const program = anchor.workspace.Reflink as Program<Reflink>;
 
-  const merchant = anchor.web3.Keypair.generate();
-  const referrer = anchor.web3.Keypair.generate();
-  const customer = anchor.web3.Keypair.generate();
-  const payer = provider.wallet;
+  let merchant = provider.wallet; // Merchant is the deployer's wallet for test
+  let promoter = anchor.web3.Keypair.generate(); // A random promoter
+  let consumer = anchor.web3.Keypair.generate(); // A random consumer (optional for now)
 
-  const campaignId = "demo-campaign";
-  const referralRewardBps = 1000; // 10%
-  const conversionAmount = anchor.web3.LAMPORTS_PER_SOL;
+  let promotion = anchor.web3.Keypair.generate();
+  let promotionLink = anchor.web3.Keypair.generate();
 
-  let campaignPda: PublicKey;
-  let referralPda: PublicKey;
-  let campaignBump: number;
-  let referralBump: number;
-
-  it("Airdrops lamports to merchant and referrer", async () => {
-    await provider.connection.confirmTransaction(
-      await provider.connection.requestAirdrop(
-        merchant.publicKey,
-        2 * conversionAmount
-      ),
-      "confirmed"
-    );
-    await provider.connection.confirmTransaction(
-      await provider.connection.requestAirdrop(
-        referrer.publicKey,
-        1 * conversionAmount
-      ),
-      "confirmed"
-    );
-  });
-
-  it("Creates campaign with reward config", async () => {
-    [campaignPda, campaignBump] = await PublicKey.findProgramAddressSync(
-      [Buffer.from("campaign"), merchant.publicKey.toBuffer()],
-      program.programId
-    );
-
-    await program.methods
-      .createCampaign(campaignId, referralRewardBps)
+  it("Merchant creates a promotion", async () => {
+    const tx = await program.methods
+      .createPromotion(new anchor.BN(10)) // 10% commission
       .accounts({
-        campaign: campaignPda,
+        promotion: promotion.publicKey,
         merchant: merchant.publicKey,
-        systemProgram: SystemProgram.programId,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .signers([merchant])
+      .signers([promotion])
       .rpc();
 
-    const campaign = await program.account.campaign.fetch(campaignPda);
-    assert.equal(campaign.campaignId, campaignId);
-    assert.equal(campaign.referralRewardBps, referralRewardBps);
+    console.log("Promotion created:", tx);
+
+    const promotionAccount = await program.account.promotion.fetch(
+      promotion.publicKey
+    );
+    assert.ok(promotionAccount.merchant.equals(merchant.publicKey));
+    assert.equal(promotionAccount.commissionRate, 10);
+    assert.equal(promotionAccount.isOpen, true);
   });
 
-  it("Logs conversion and pays referrer", async () => {
-    [referralPda, referralBump] = await PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("record"),
-        campaignPda.toBuffer(),
-        customer.publicKey.toBuffer(),
-        Buffer.from("conversion"),
-      ],
-      program.programId
+  it("Promoter promotes the promotion", async () => {
+    // Airdrop SOL to promoter for rent
+    await provider.connection.requestAirdrop(
+      promoter.publicKey,
+      1 * anchor.web3.LAMPORTS_PER_SOL
     );
+    await sleep(1000);
 
-    const referrerBefore = await provider.connection.getBalance(
-      referrer.publicKey
-    );
-    const merchantBefore = await provider.connection.getBalance(
-      merchant.publicKey
-    );
-
-    await program.methods
-      .logConversion(
-        "conversion",
-        "some-metadata",
-        new anchor.BN(conversionAmount)
-      )
+    const tx = await program.methods
+      .promote()
       .accounts({
-        referralRecord: referralPda,
-        campaign: campaignPda,
-        referrer: referrer.publicKey,
-        customer: customer.publicKey,
-        merchant: merchant.publicKey,
-        payer: payer.publicKey,
-        systemProgram: SystemProgram.programId,
+        promotionLink: promotionLink.publicKey,
+        promoter: promoter.publicKey,
+        promotion: promotion.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([promotionLink, promoter])
+      .rpc();
+
+    console.log("Promotion link created:", tx);
+
+    const linkAccount = await program.account.promotionLink.fetch(
+      promotionLink.publicKey
+    );
+    assert.ok(linkAccount.promoter.equals(promoter.publicKey));
+    assert.ok(linkAccount.promotion.equals(promotion.publicKey));
+  });
+
+  it("Consumer purchases through promotion link", async () => {
+    const tx = await program.methods
+      .purchase()
+      .accounts({
+        promotion: promotion.publicKey,
       })
       .rpc();
 
-    const referrerAfter = await provider.connection.getBalance(
-      referrer.publicKey
+    console.log("Purchase completed:", tx);
+  });
+
+  it("Merchant closes the promotion", async () => {
+    const tx = await program.methods
+      .closePromotion()
+      .accounts({
+        promotion: promotion.publicKey,
+        merchant: merchant.publicKey,
+      })
+      .rpc();
+
+    console.log("Promotion closed:", tx);
+
+    const promotionAccount = await program.account.promotion.fetch(
+      promotion.publicKey
     );
-    const merchantAfter = await provider.connection.getBalance(
-      merchant.publicKey
-    );
+    assert.equal(promotionAccount.isOpen, false);
+  });
 
-    const referrerGain = referrerAfter - referrerBefore;
-    const merchantGain = merchantAfter - merchantBefore;
-
-    assert.equal(referrerGain, conversionAmount * 0.1);
-    assert.equal(merchantGain, conversionAmount * 0.9);
-
-    const record = await program.account.referralRecord.fetch(referralPda);
-    assert.equal(record.amount.toNumber(), conversionAmount);
-    assert.equal(record.eventType, "conversion");
-    assert.equal(record.metadata, "some-metadata");
+  it("Purchase should fail after closing the promotion", async () => {
+    try {
+      await program.methods
+        .purchase()
+        .accounts({
+          promotion: promotion.publicKey,
+        })
+        .rpc();
+      assert.fail("Purchase should have failed");
+    } catch (err) {
+      const errMsg = "The promotion is already closed.";
+      assert.ok(err.error.errorMessage.includes(errMsg));
+    }
   });
 });
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
