@@ -10,7 +10,7 @@ describe("reflink", () => {
 
   const program = anchor.workspace.Reflink as Program<Reflink>;
 
-  const merchant = provider.wallet;
+  const merchant = anchor.web3.Keypair.generate();
   const promoter = anchor.web3.Keypair.generate();
   const buyer = anchor.web3.Keypair.generate();
   const platform = anchor.web3.Keypair.generate();
@@ -20,9 +20,10 @@ describe("reflink", () => {
   let promotionLink: anchor.web3.PublicKey;
   let promotionLinkBump: number;
 
-  it("Airdrop SOL to promoter, buyer, and platform", async () => {
+  it("Airdrop SOL to merchant, promoter, buyer, and platform", async () => {
     const connection = provider.connection;
     for (const user of [
+      merchant.publicKey,
       promoter.publicKey,
       buyer.publicKey,
       platform.publicKey,
@@ -43,7 +44,7 @@ describe("reflink", () => {
         merchant: merchant.publicKey,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .signers([promotionKeypair])
+      .signers([merchant, promotionKeypair])
       .rpc();
 
     console.log("✅ Create promotion tx:", tx);
@@ -201,6 +202,7 @@ describe("reflink", () => {
         promotion,
         merchant: merchant.publicKey,
       })
+      .signers([merchant])
       .rpc();
 
     console.log("✅ Close promotion tx:", tx);
