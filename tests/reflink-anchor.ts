@@ -86,7 +86,42 @@ describe("reflink", () => {
   });
 
   it("Buyer makes a purchase (SOL transfer)", async () => {
-    const totalAmount = new anchor.BN(1_000_000); // 0.001 SOL
+    const connection = provider.connection;
+    const totalAmount = new anchor.BN(1_000_000_000); // 1 SOL
+
+    // Helper to fetch balance
+    const getBalance = async (pubkey: anchor.web3.PublicKey) => {
+      return await connection.getBalance(pubkey);
+    };
+
+    const balancesBefore = {
+      buyer: await getBalance(buyer.publicKey),
+      promoter: await getBalance(promoter.publicKey),
+      merchant: await getBalance(merchant.publicKey),
+      platform: await getBalance(platform.publicKey),
+    };
+
+    console.log("----- Balances Before Purchase -----");
+    console.log(
+      "Buyer:",
+      balancesBefore.buyer / anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Promoter:",
+      balancesBefore.promoter / anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Merchant:",
+      balancesBefore.merchant / anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Platform:",
+      balancesBefore.platform / anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
 
     const tx = await program.methods
       .purchase(totalAmount)
@@ -102,6 +137,61 @@ describe("reflink", () => {
       .rpc();
 
     console.log("✅ Purchase tx:", tx);
+
+    const balancesAfter = {
+      buyer: await getBalance(buyer.publicKey),
+      promoter: await getBalance(promoter.publicKey),
+      merchant: await getBalance(merchant.publicKey),
+      platform: await getBalance(platform.publicKey),
+    };
+
+    console.log("----- Balances After Purchase -----");
+    console.log(
+      "Buyer:",
+      balancesAfter.buyer / anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Promoter:",
+      balancesAfter.promoter / anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Merchant:",
+      balancesAfter.merchant / anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Platform:",
+      balancesAfter.platform / anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+
+    console.log("----- Balance Changes (Δ) -----");
+    console.log(
+      "Buyer Δ:",
+      (balancesAfter.buyer - balancesBefore.buyer) /
+        anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Promoter Δ:",
+      (balancesAfter.promoter - balancesBefore.promoter) /
+        anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Merchant Δ:",
+      (balancesAfter.merchant - balancesBefore.merchant) /
+        anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
+    console.log(
+      "Platform Δ:",
+      (balancesAfter.platform - balancesBefore.platform) /
+        anchor.web3.LAMPORTS_PER_SOL,
+      "SOL"
+    );
   });
 
   it("Merchant closes the promotion", async () => {
