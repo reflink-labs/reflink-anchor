@@ -11,14 +11,10 @@ export class ReflinkSDK {
   readonly program: anchor.Program<Reflink>;
   readonly provider: anchor.AnchorProvider;
 
-  constructor(provider: anchor.AnchorProvider, programId: PublicKey) {
+  constructor(provider: anchor.AnchorProvider) {
     this.provider = provider;
     const idl = require("../target/idl/reflink.json"); // <-- Make sure you have the idl
-    this.program = new anchor.Program(
-      idl,
-      programId,
-      provider
-    ) as anchor.Program<Reflink>;
+    this.program = new anchor.Program<Reflink>(idl, provider);
   }
 
   async airdrop(publicKey: PublicKey, solAmount = 2): Promise<void> {
