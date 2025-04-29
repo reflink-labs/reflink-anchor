@@ -1,19 +1,32 @@
 import * as anchor from "@coral-xyz/anchor";
-import { PublicKey, SystemProgram, Keypair } from "@solana/web3.js";
+import {
+  PublicKey,
+  Keypair,
+  SystemProgram,
+  LAMPORTS_PER_SOL,
+} from "@solana/web3.js";
 import { Reflink } from "../target/types/reflink";
 
 export class ReflinkSDK {
-  program: anchor.Program<Reflink>;
-  provider: anchor.AnchorProvider;
+  readonly program: anchor.Program<Reflink>;
+  readonly provider: anchor.AnchorProvider;
 
   constructor(provider: anchor.AnchorProvider, programId: PublicKey) {
     this.provider = provider;
-    const idl = require("../target/idl/reflink.json"); // Make sure your idl is built
+    const idl = require("../target/idl/reflink.json"); // <-- Make sure you have the idl
     this.program = new anchor.Program(
       idl,
       programId,
       provider
     ) as anchor.Program<Reflink>;
+  }
+
+  async airdrop(publicKey: PublicKey, solAmount = 2): Promise<void> {
+    const sig = await this.provider.connection.requestAirdrop(
+      publicKey,
+      solAmount * LAMPORTS_PER_SOL
+    );
+    await this.provider.connection.confirmTransaction(sig);
   }
 
   async createPromotion(
@@ -36,13 +49,9 @@ export class ReflinkSDK {
   }
 
   async promote(promoter: Keypair, promotion: PublicKey): Promise<PublicKey> {
-    const [promotionLink, _bump] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("promotion_link"),
-        promoter.publicKey.toBuffer(),
-        promotion.toBuffer(),
-      ],
-      this.program.programId
+    const [promotionLink, _bump] = await this.findPromotionLinkPDA(
+      promoter.publicKey,
+      promotion
     );
 
     await this.program.methods
@@ -90,5 +99,38 @@ export class ReflinkSDK {
       })
       .signers([merchant])
       .rpc();
+  }
+
+  //
+  // 🔥 PDA Helpers
+  //
+  async findPromotionLinkPDA(
+    promoter: PublicKey,
+    promotion: PublicKey
+  ): Promise<[PublicKey, number]> {
+    return PublicKey.findProgramAddress(
+      [
+        Buffer.from("promotion_link"),
+        promoter.toBuffer(),
+        promotion.toBuffer(),
+      ],
+      this.program.programId
+    );
+  }
+
+  //
+  // 🔥 Account Fetchers
+  //
+  async fetchPromotion(promotion: PublicKey) {
+    return await this.program.account.promotion.fetch(promotion);
+  }
+
+  async fetchPromotionLink(promotionLink: PublicKey) {
+    return await this.program.account.promotionLink.fetch(promotionLink);
+  }
+
+  async getBalance(publicKey: PublicKey): Promise<number> {
+    const lamports = await this.provider.connection.getBalance(publicKey);
+    return lamports / LAMPORTS_PER_SOL;
   }
 }
