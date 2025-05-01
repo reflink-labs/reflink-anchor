@@ -36,7 +36,6 @@ export class ReflinkSDK {
       .accounts({
         promotion: promotion.publicKey,
         merchant: merchant.publicKey,
-        systemProgram: SystemProgram.programId,
       })
       .signers([merchant, promotion])
       .rpc();
@@ -53,10 +52,9 @@ export class ReflinkSDK {
     await this.program.methods
       .promote()
       .accounts({
-        promotionLink,
+        promotionLink: promotionLink as any,
         promoter: promoter.publicKey,
         promotion,
-        systemProgram: SystemProgram.programId,
       })
       .signers([promoter])
       .rpc();
@@ -80,7 +78,6 @@ export class ReflinkSDK {
         promoter,
         merchant,
         platform,
-        systemProgram: SystemProgram.programId,
       })
       .signers([buyer])
       .rpc();

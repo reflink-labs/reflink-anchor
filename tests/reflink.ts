@@ -42,7 +42,6 @@ describe("reflink", () => {
       .accounts({
         promotion: promotion,
         merchant: merchant.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([merchant, promotionKeypair])
       .rpc();
@@ -73,7 +72,6 @@ describe("reflink", () => {
         promotionLink,
         promoter: promoter.publicKey,
         promotion,
-        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([promoter])
       .rpc();
@@ -132,7 +130,6 @@ describe("reflink", () => {
         promoter: promoter.publicKey,
         merchant: merchant.publicKey,
         platform: platform.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([buyer])
       .rpc();
