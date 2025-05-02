@@ -9,202 +9,162 @@ describe("reflink", () => {
   anchor.setProvider(provider);
 
   const program = anchor.workspace.Reflink as Program<Reflink>;
+  const connection = provider.connection;
+  const user = provider.wallet;
 
+  // Keypairs for testing
   const merchant = anchor.web3.Keypair.generate();
-  const promoter = anchor.web3.Keypair.generate();
-  const buyer = anchor.web3.Keypair.generate();
-  const platform = anchor.web3.Keypair.generate();
+  const affiliate = anchor.web3.Keypair.generate();
+  const referral = anchor.web3.Keypair.generate();
 
-  const promotionKeypair = anchor.web3.Keypair.generate();
-  let promotion = promotionKeypair.publicKey;
-  let promotionLink: anchor.web3.PublicKey;
-  let promotionLinkBump: number;
+  // Wallets to receive payments
+  const merchantWallet = anchor.web3.Keypair.generate();
+  const affiliateWallet = anchor.web3.Keypair.generate();
 
-  it("Airdrop SOL to merchant, promoter, buyer, and platform", async () => {
-    const connection = provider.connection;
-    for (const user of [
-      merchant.publicKey,
-      promoter.publicKey,
-      buyer.publicKey,
-      platform.publicKey,
-    ]) {
-      const tx = await connection.requestAirdrop(
-        user,
-        2 * anchor.web3.LAMPORTS_PER_SOL
+  const COMMISSION_BPS = 500; // 5%
+
+  it("Airdrop SOL to test accounts", async () => {
+    // Airdrop to user wallet (who will be paying for transactions and making the payment)
+    const sig = await connection.requestAirdrop(user.publicKey, 2_000_000_000);
+    await connection.confirmTransaction(sig);
+
+    // Airdrop to the merchant and affiliate wallets (small amount just to create them)
+    for (const wallet of [merchantWallet, affiliateWallet]) {
+      const walletSig = await connection.requestAirdrop(
+        wallet.publicKey,
+        10_000_000
       );
-      await connection.confirmTransaction(tx);
+      await connection.confirmTransaction(walletSig);
     }
   });
 
-  it("Merchant creates a promotion", async () => {
-    const tx = await program.methods
-      .createPromotion(10) // 10% commission
+  it("Registers a merchant", async () => {
+    await program.methods
+      .registerMerchant(COMMISSION_BPS)
       .accounts({
-        promotion: promotion,
         merchant: merchant.publicKey,
+        authority: merchantWallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .signers([merchant, promotionKeypair])
+      .signers([merchant, merchantWallet])
       .rpc();
 
-    console.log("✅ Create promotion tx:", tx);
-
-    const promotionAccount = await program.account.promotion.fetch(promotion);
-    assert.ok(promotionAccount.isOpen);
-    assert.ok(promotionAccount.merchant.equals(merchant.publicKey));
-  });
-
-  it("Promoter promotes a promotion", async () => {
-    const [promoLinkPubkey, bump] =
-      anchor.web3.PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("promotion_link"),
-          promoter.publicKey.toBuffer(),
-          promotion.toBuffer(),
-        ],
-        program.programId
-      );
-    promotionLink = promoLinkPubkey;
-    promotionLinkBump = bump;
-
-    const tx = await program.methods
-      .promote()
-      .accounts({
-        promotionLink,
-        promoter: promoter.publicKey,
-        promotion,
-      })
-      .signers([promoter])
-      .rpc();
-
-    console.log("✅ Promote tx:", tx);
-
-    const promotionLinkAccount = await program.account.promotionLink.fetch(
-      promotionLink
+    // Verify merchant account data
+    const merchantAccount = await program.account.merchant.fetch(
+      merchant.publicKey
     );
-    assert.ok(promotionLinkAccount.promoter.equals(promoter.publicKey));
-  });
-
-  it("Buyer makes a purchase (SOL transfer)", async () => {
-    const connection = provider.connection;
-    const totalAmount = new anchor.BN(1_000_000_000); // 1 SOL
-
-    // Helper to fetch balance
-    const getBalance = async (pubkey: anchor.web3.PublicKey) => {
-      return await connection.getBalance(pubkey);
-    };
-
-    const balancesBefore = {
-      buyer: await getBalance(buyer.publicKey),
-      promoter: await getBalance(promoter.publicKey),
-      merchant: await getBalance(merchant.publicKey),
-      platform: await getBalance(platform.publicKey),
-    };
-
-    console.log("----- Balances Before Purchase -----");
-    console.log(
-      "Buyer:",
-      balancesBefore.buyer / anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
+    assert.ok(
+      merchantAccount.authority.equals(merchantWallet.publicKey),
+      "Merchant authority does not match"
     );
-    console.log(
-      "Promoter:",
-      balancesBefore.promoter / anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-    console.log(
-      "Merchant:",
-      balancesBefore.merchant / anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-    console.log(
-      "Platform:",
-      balancesBefore.platform / anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-
-    const tx = await program.methods
-      .purchase(totalAmount)
-      .accounts({
-        promotion,
-        buyer: buyer.publicKey,
-        promoter: promoter.publicKey,
-        merchant: merchant.publicKey,
-        platform: platform.publicKey,
-      })
-      .signers([buyer])
-      .rpc();
-
-    console.log("✅ Purchase tx:", tx);
-
-    const balancesAfter = {
-      buyer: await getBalance(buyer.publicKey),
-      promoter: await getBalance(promoter.publicKey),
-      merchant: await getBalance(merchant.publicKey),
-      platform: await getBalance(platform.publicKey),
-    };
-
-    console.log("----- Balances After Purchase -----");
-    console.log(
-      "Buyer:",
-      balancesAfter.buyer / anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-    console.log(
-      "Promoter:",
-      balancesAfter.promoter / anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-    console.log(
-      "Merchant:",
-      balancesAfter.merchant / anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-    console.log(
-      "Platform:",
-      balancesAfter.platform / anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-
-    console.log("----- Balance Changes (Δ) -----");
-    console.log(
-      "Buyer Δ:",
-      (balancesAfter.buyer - balancesBefore.buyer) /
-        anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-    console.log(
-      "Promoter Δ:",
-      (balancesAfter.promoter - balancesBefore.promoter) /
-        anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-    console.log(
-      "Merchant Δ:",
-      (balancesAfter.merchant - balancesBefore.merchant) /
-        anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
-    );
-    console.log(
-      "Platform Δ:",
-      (balancesAfter.platform - balancesBefore.platform) /
-        anchor.web3.LAMPORTS_PER_SOL,
-      "SOL"
+    assert.equal(
+      merchantAccount.commissionBps,
+      COMMISSION_BPS,
+      "Commission rate not set correctly"
     );
   });
 
-  it("Merchant closes the promotion", async () => {
-    const tx = await program.methods
-      .closePromotion()
+  it("Registers an affiliate", async () => {
+    await program.methods
+      .registerAffiliate()
       .accounts({
-        promotion,
-        merchant: merchant.publicKey,
+        affiliate: affiliate.publicKey,
+        authority: affiliateWallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .signers([merchant])
+      .signers([affiliate, affiliateWallet])
       .rpc();
 
-    console.log("✅ Close promotion tx:", tx);
+    // Verify affiliate account data
+    const affiliateAccount = await program.account.affiliate.fetch(
+      affiliate.publicKey
+    );
+    assert.ok(
+      affiliateAccount.authority.equals(affiliateWallet.publicKey),
+      "Affiliate authority does not match"
+    );
+    assert.ok(
+      affiliateAccount.totalEarned.eq(new anchor.BN(0)),
+      "Initial earned amount should be zero"
+    );
+  });
 
-    const promotionAccount = await program.account.promotion.fetch(promotion);
-    assert.ok(!promotionAccount.isOpen);
+  const testReferralAmount = new anchor.BN(100_000_000); // 0.1 SOL
+  const expectedCommission = new anchor.BN(
+    (testReferralAmount.toNumber() * COMMISSION_BPS) / 10_000
+  );
+  const expectedMerchantAmount = testReferralAmount.sub(expectedCommission);
+
+  it("Registers a referral and distributes payment correctly", async () => {
+    // Get initial balances
+    const initialMerchantBalance = await connection.getBalance(
+      merchantWallet.publicKey
+    );
+    const initialAffiliateBalance = await connection.getBalance(
+      affiliateWallet.publicKey
+    );
+
+    await program.methods
+      .registerReferral(testReferralAmount)
+      .accounts({
+        affiliate: affiliate.publicKey,
+        referral: referral.publicKey,
+        merchant: merchant.publicKey,
+        merchantWallet: merchantWallet.publicKey,
+        affiliateWallet: affiliateWallet.publicKey,
+        payer: user.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([referral])
+      .rpc();
+
+    // Verify referral data
+    const referralAccount = await program.account.referral.fetch(
+      referral.publicKey
+    );
+    assert.ok(
+      referralAccount.affiliate.equals(affiliate.publicKey),
+      "Referral affiliate doesn't match"
+    );
+    assert.ok(
+      referralAccount.amount.eq(testReferralAmount),
+      "Referral amount doesn't match"
+    );
+    assert.ok(
+      referralAccount.commission.eq(expectedCommission),
+      "Commission doesn't match expected amount"
+    );
+
+    // Verify affiliate tracking data was updated
+    const affiliateAccount = await program.account.affiliate.fetch(
+      affiliate.publicKey
+    );
+    assert.ok(
+      affiliateAccount.totalEarned.eq(expectedCommission),
+      "Affiliate's total earned not updated correctly"
+    );
+
+    // Verify actual payment transfers
+    const finalMerchantBalance = await connection.getBalance(
+      merchantWallet.publicKey
+    );
+    const finalAffiliateBalance = await connection.getBalance(
+      affiliateWallet.publicKey
+    );
+
+    // Account for some floating point/BN precision issues with approximately equal
+    assert.approximately(
+      finalMerchantBalance - initialMerchantBalance,
+      expectedMerchantAmount.toNumber(),
+      10, // Allow small difference due to conversion
+      "Merchant didn't receive the correct amount"
+    );
+
+    assert.approximately(
+      finalAffiliateBalance - initialAffiliateBalance,
+      expectedCommission.toNumber(),
+      10, // Allow small difference due to conversion
+      "Affiliate didn't receive the correct commission"
+    );
   });
 });

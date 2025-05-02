@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::system_program;
 
 declare_id!("4PpiC9e179ufENLcgmK5NQJKHZ48NepLguqCJPsnBT9A");
 
@@ -6,195 +7,164 @@ declare_id!("4PpiC9e179ufENLcgmK5NQJKHZ48NepLguqCJPsnBT9A");
 pub mod reflink {
     use super::*;
 
-    pub fn create_promotion(ctx: Context<CreatePromotion>, commission_rate: u8) -> Result<()> {
-        let promotion = &mut ctx.accounts.promotion;
-        promotion.merchant = ctx.accounts.merchant.key();
-        promotion.commission_rate = commission_rate;
-        promotion.is_open = true;
+    pub fn register_affiliate(ctx: Context<RegisterAffiliate>) -> Result<()> {
+        let affiliate = &mut ctx.accounts.affiliate;
+        affiliate.authority = ctx.accounts.authority.key();
+        affiliate.total_earned = 0;
+
         Ok(())
     }
 
-    pub fn promote(ctx: Context<Promote>) -> Result<()> {
-        let promotion_link = &mut ctx.accounts.promotion_link;
-        promotion_link.promoter = ctx.accounts.promoter.key();
-        promotion_link.promotion = ctx.accounts.promotion.key();
-        Ok(())
-    }
-
-    pub fn close_promotion(ctx: Context<ClosePromotion>) -> Result<()> {
-        let promotion = &mut ctx.accounts.promotion;
-        require_keys_eq!(
-            promotion.merchant,
-            ctx.accounts.merchant.key(),
-            ReflinkError::Unauthorized
-        );
-        promotion.is_open = false;
-        Ok(())
-    }
-
-    pub fn purchase(ctx: Context<Purchase>, total_amount: u64) -> Result<()> {
-        let promotion = &ctx.accounts.promotion;
-        require!(promotion.is_open, ReflinkError::PromotionClosed);
-
-        let commission_percentage = promotion.commission_rate as u64;
-        let platform_fee_percentage = 1u64;
-
+    pub fn register_merchant(ctx: Context<RegisterMerchant>, commission_bps: u16) -> Result<()> {
         require!(
-            commission_percentage + platform_fee_percentage <= 100,
-            ReflinkError::InvalidCommissionRate
+            commission_bps <= 10000,
+            AffiliateError::InvalidCommissionRate
+        );
+        let merchant = &mut ctx.accounts.merchant;
+        merchant.authority = ctx.accounts.authority.key();
+        merchant.commission_bps = commission_bps;
+        Ok(())
+    }
+
+    pub fn register_referral(ctx: Context<RegisterReferral>, amount: u64) -> Result<()> {
+        let referral = &mut ctx.accounts.referral;
+        let merchant = &ctx.accounts.merchant;
+        let affiliate = &mut ctx.accounts.affiliate;
+
+        // Validate the affiliate account exists
+        require!(
+            affiliate.authority != Pubkey::default(),
+            AffiliateError::InvalidAffiliate
         );
 
-        let promoter_amount = total_amount
-            .checked_mul(commission_percentage)
-            .unwrap()
-            .checked_div(100)
-            .unwrap();
-        let platform_amount = total_amount
-            .checked_mul(platform_fee_percentage)
-            .unwrap()
-            .checked_div(100)
-            .unwrap();
-        let merchant_amount = total_amount
-            .checked_sub(promoter_amount)
-            .unwrap()
-            .checked_sub(platform_amount)
-            .unwrap();
+        // Calculate commission amount
+        let commission = amount
+            .checked_mul(merchant.commission_bps as u64)
+            .ok_or(AffiliateError::CalculationError)?
+            .checked_div(10_000)
+            .ok_or(AffiliateError::CalculationError)?;
 
-        // Only SOL transfers
-        system_program_transfer(
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.buyer.to_account_info(),
-            ctx.accounts.promoter.to_account_info(),
-            promoter_amount,
+        // Calculate merchant amount (total payment minus commission)
+        let merchant_amount = amount
+            .checked_sub(commission)
+            .ok_or(AffiliateError::CalculationError)?;
+
+        // Store referral information
+        referral.affiliate = affiliate.key();
+        referral.amount = amount;
+        referral.commission = commission;
+        referral.timestamp = Clock::get()?.unix_timestamp;
+
+        // Update the affiliate's total earned
+        affiliate.total_earned = affiliate
+            .total_earned
+            .checked_add(commission)
+            .ok_or(AffiliateError::CalculationError)?;
+
+        // Transfer commission amount directly to affiliate wallet
+        system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.payer.to_account_info(),
+                    to: ctx.accounts.affiliate_wallet.to_account_info(),
+                },
+            ),
+            commission,
         )?;
-        system_program_transfer(
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.buyer.to_account_info(),
-            ctx.accounts.merchant.to_account_info(),
+
+        // Transfer merchant amount directly to the merchant wallet
+        system_program::transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.payer.to_account_info(),
+                    to: ctx.accounts.merchant_wallet.to_account_info(),
+                },
+            ),
             merchant_amount,
         )?;
-        system_program_transfer(
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.buyer.to_account_info(),
-            ctx.accounts.platform.to_account_info(),
-            platform_amount,
-        )?;
 
         Ok(())
     }
 }
 
-//
-// Helper function
-//
-
-fn system_program_transfer<'info>(
-    system_program: AccountInfo<'info>,
-    from: AccountInfo<'info>,
-    to: AccountInfo<'info>,
-    amount: u64,
-) -> Result<()> {
-    let cpi_ctx = CpiContext::new(
-        system_program,
-        anchor_lang::system_program::Transfer { from, to },
-    );
-    anchor_lang::system_program::transfer(cpi_ctx, amount)
-}
-
-//
-// Data Accounts
-//
-
 #[account]
-pub struct Promotion {
-    pub merchant: Pubkey,
-    pub commission_rate: u8,
-    pub is_open: bool,
+pub struct Affiliate {
+    pub authority: Pubkey,
+    pub total_earned: u64, // Track total earnings for historical purposes
 }
 
 #[account]
-pub struct PromotionLink {
-    pub promoter: Pubkey,
-    pub promotion: Pubkey,
+pub struct Referral {
+    pub affiliate: Pubkey,
+    pub amount: u64,
+    pub commission: u64,
+    pub timestamp: i64,
 }
 
-//
-// Contexts
-//
+#[account]
+pub struct Merchant {
+    pub authority: Pubkey,
+    pub commission_bps: u16, // basis points, 500 = 5%
+}
 
 #[derive(Accounts)]
-pub struct CreatePromotion<'info> {
-    #[account(init, payer = merchant, space = Promotion::LEN)]
-    pub promotion: Account<'info, Promotion>,
+pub struct RegisterAffiliate<'info> {
+    #[account(init, payer = authority, space = 8 + 32 + 8)]
+    pub affiliate: Account<'info, Affiliate>,
+
     #[account(mut)]
-    pub merchant: Signer<'info>,
+    pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct Promote<'info> {
-    #[account(
-        init_if_needed,
-        payer = promoter,
-        space = PromotionLink::LEN,
-        seeds = [b"promotion_link", promoter.key().as_ref(), promotion.key().as_ref()],
-        bump
-    )]
-    pub promotion_link: Account<'info, PromotionLink>,
+pub struct RegisterMerchant<'info> {
+    #[account(init, payer = authority, space = 8 + 32 + 2)]
+    pub merchant: Account<'info, Merchant>,
 
     #[account(mut)]
-    pub promoter: Signer<'info>,
-    pub promotion: Account<'info, Promotion>,
+    pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct ClosePromotion<'info> {
+pub struct RegisterReferral<'info> {
     #[account(mut)]
-    pub promotion: Account<'info, Promotion>,
-    #[account(mut)]
-    pub merchant: Signer<'info>,
-}
+    pub affiliate: Account<'info, Affiliate>,
 
-#[derive(Accounts)]
-pub struct Purchase<'info> {
-    pub promotion: Account<'info, Promotion>,
+    #[account(init, payer = payer, space = 8 + 32 + 8 + 8 + 8)]
+    pub referral: Account<'info, Referral>,
 
-    #[account(mut)]
-    pub buyer: Signer<'info>,
+    pub merchant: Account<'info, Merchant>,
 
+    /// The wallet that will receive the merchant's portion of the payment
     #[account(mut)]
-    pub promoter: SystemAccount<'info>,
+    pub merchant_wallet: SystemAccount<'info>,
+
+    /// The wallet that will receive the affiliate's commission
     #[account(mut)]
-    pub merchant: SystemAccount<'info>,
+    pub affiliate_wallet: SystemAccount<'info>,
+
+    /// The wallet that is making the payment
     #[account(mut)]
-    pub platform: SystemAccount<'info>,
+    pub payer: Signer<'info>,
 
     pub system_program: Program<'info, System>,
 }
-
-//
-// Errors
-//
 
 #[error_code]
-pub enum ReflinkError {
-    #[msg("The promotion is already closed.")]
-    PromotionClosed,
-    #[msg("Unauthorized action.")]
-    Unauthorized,
+pub enum AffiliateError {
     #[msg("Invalid commission rate.")]
     InvalidCommissionRate,
-}
 
-//
-// Account Sizes
-//
+    #[msg("Unauthorized.")]
+    Unauthorized,
 
-impl Promotion {
-    const LEN: usize = 8 + 32 + 1 + 1; // anchor discriminator + pubkey + u8 + bool
-}
+    #[msg("Invalid affiliate.")]
+    InvalidAffiliate,
 
-impl PromotionLink {
-    const LEN: usize = 8 + 32 + 32; // anchor discriminator + 2 pubkeys
+    #[msg("Calculation error.")]
+    CalculationError,
 }
