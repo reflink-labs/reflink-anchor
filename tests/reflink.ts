@@ -44,7 +44,6 @@ describe("reflink", () => {
       .accounts({
         merchant: merchant.publicKey,
         authority: merchantWallet.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([merchant, merchantWallet])
       .rpc();
@@ -70,7 +69,6 @@ describe("reflink", () => {
       .accounts({
         affiliate: affiliate.publicKey,
         authority: affiliateWallet.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([affiliate, affiliateWallet])
       .rpc();
@@ -113,7 +111,6 @@ describe("reflink", () => {
         merchantWallet: merchantWallet.publicKey,
         affiliateWallet: affiliateWallet.publicKey,
         payer: user.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([referral])
       .rpc();
