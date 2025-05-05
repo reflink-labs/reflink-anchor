@@ -40,7 +40,7 @@ The program uses the following account types:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/reflink.git
+   git clone https://github.com/reflink-labs/reflink-anchor.git
    cd reflink
    ```
 
