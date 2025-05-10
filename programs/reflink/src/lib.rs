@@ -193,11 +193,7 @@ pub mod reflink {
 
         let merchant = &mut ctx.accounts.merchant;
 
-        // Only the merchant authority can update the commission
-        require!(
-            merchant.authority == ctx.accounts.authority.key(),
-            AffiliateError::Unauthorized
-        );
+        // Auth check is now handled by the seeds constraint
 
         merchant.commission_bps = new_commission_bps;
 
@@ -208,11 +204,7 @@ pub mod reflink {
     pub fn toggle_merchant_status(ctx: Context<UpdateMerchant>) -> Result<()> {
         let merchant = &mut ctx.accounts.merchant;
 
-        // Only the merchant authority can toggle status
-        require!(
-            merchant.authority == ctx.accounts.authority.key(),
-            AffiliateError::Unauthorized
-        );
+        // Auth check is now handled by the seeds constraint
 
         merchant.active = !merchant.active;
 
@@ -247,7 +239,13 @@ pub struct Merchant {
 
 #[derive(Accounts)]
 pub struct RegisterAffiliate<'info> {
-    #[account(init, payer = authority, space = 8 + 32 + 8 + 8)]
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + 32 + 8 + 8,
+        seeds = [b"affiliate", authority.key().as_ref()],
+        bump
+    )]
     pub affiliate: Account<'info, Affiliate>,
 
     #[account(mut)]
@@ -257,7 +255,13 @@ pub struct RegisterAffiliate<'info> {
 
 #[derive(Accounts)]
 pub struct RegisterMerchant<'info> {
-    #[account(init, payer = authority, space = 8 + 32 + 2 + 1)]
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + 32 + 2 + 1,
+        seeds = [b"merchant", authority.key().as_ref()],
+        bump
+    )]
     pub merchant: Account<'info, Merchant>,
 
     #[account(mut)]
@@ -267,20 +271,34 @@ pub struct RegisterMerchant<'info> {
 
 #[derive(Accounts)]
 pub struct RegisterReferralSol<'info> {
-    #[account(mut)]
+    #[account(mut, seeds = [b"affiliate", affiliate.authority.as_ref()], bump)]
     pub affiliate: Account<'info, Affiliate>,
 
-    #[account(init, payer = payer, space = 8 + 32 + 32 + 8 + 8 + 8 + 1 + 32)]
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + 32 + 32 + 8 + 8 + 8 + 1 + 32,
+        seeds = [
+            b"referral", 
+            affiliate.key().as_ref(),
+            merchant.key().as_ref(),
+            &affiliate.total_referrals.to_le_bytes()
+        ],
+        bump
+    )]
     pub referral: Account<'info, Referral>,
 
+    #[account(seeds = [b"merchant", merchant.authority.as_ref()], bump)]
     pub merchant: Account<'info, Merchant>,
 
     /// The wallet that will receive the merchant's portion of the payment
-    #[account(mut)]
+    /// This should be the merchant's authority wallet or another designated wallet
+    #[account(mut, constraint = merchant_wallet.key() == merchant.authority)]
     pub merchant_wallet: SystemAccount<'info>,
 
     /// The wallet that will receive the affiliate's commission
-    #[account(mut)]
+    /// This should be the affiliate's authority wallet or another designated wallet
+    #[account(mut, constraint = affiliate_wallet.key() == affiliate.authority)]
     pub affiliate_wallet: SystemAccount<'info>,
 
     /// The wallet that is making the payment
@@ -292,12 +310,24 @@ pub struct RegisterReferralSol<'info> {
 
 #[derive(Accounts)]
 pub struct RegisterReferralToken<'info> {
-    #[account(mut)]
+    #[account(mut, seeds = [b"affiliate", affiliate.authority.as_ref()], bump)]
     pub affiliate: Account<'info, Affiliate>,
 
-    #[account(init, payer = payer, space = 8 + 32 + 32 + 8 + 8 + 8 + 1 + 32)]
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + 32 + 32 + 8 + 8 + 8 + 1 + 32,
+        seeds = [
+            b"referral", 
+            affiliate.key().as_ref(),
+            merchant.key().as_ref(),
+            &affiliate.total_referrals.to_le_bytes()
+        ],
+        bump
+    )]
     pub referral: Account<'info, Referral>,
 
+    #[account(seeds = [b"merchant", merchant.authority.as_ref()], bump)]
     pub merchant: Account<'info, Merchant>,
 
     /// The token mint being used for payment
@@ -326,7 +356,11 @@ pub struct RegisterReferralToken<'info> {
 
 #[derive(Accounts)]
 pub struct UpdateMerchant<'info> {
-    #[account(mut, constraint = merchant.authority == authority.key())]
+    #[account(
+        mut,
+        seeds = [b"merchant", authority.key().as_ref()],
+        bump
+    )]
     pub merchant: Account<'info, Merchant>,
 
     pub authority: Signer<'info>,
