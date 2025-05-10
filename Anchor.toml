@@ -12,7 +12,7 @@ reflink = "2BkHiWJxLd91RWQWWcr97ggCsdA3PY1MTRoC9AJuZad9"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
