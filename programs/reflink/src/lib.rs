@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
-declare_id!("4PpiC9e179ufENLcgmK5NQJKHZ48NepLguqCJPsnBT9A");
+declare_id!("2BkHiWJxLd91RWQWWcr97ggCsdA3PY1MTRoC9AJuZad9");
 
 #[program]
 pub mod reflink {
