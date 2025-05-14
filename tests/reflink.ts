@@ -18,34 +18,37 @@ describe("reflink", () => {
   const connection = provider.connection;
   const user = provider.wallet;
 
-  // Wallets for platform, merchant, and referrer
-  const platformWallet = anchor.web3.Keypair.generate();
+  // Wallets for merchant, affiliate, and customer
   const merchantWallet = anchor.web3.Keypair.generate();
-  const referrerWallet = anchor.web3.Keypair.generate();
+  const affiliateWallet = anchor.web3.Keypair.generate();
+  const customerWallet = anchor.web3.Keypair.generate();
 
   // SPL Token accounts and mint
   let tokenMint: anchor.web3.PublicKey;
-  let platformTokenAccount: anchor.web3.PublicKey;
   let merchantTokenAccount: anchor.web3.PublicKey;
-  let referrerTokenAccount: anchor.web3.PublicKey;
-  let buyerTokenAccount: anchor.web3.PublicKey;
+  let affiliateTokenAccount: anchor.web3.PublicKey;
+  let customerTokenAccount: anchor.web3.PublicKey;
 
-  const PLATFORM_FEE_BPS = 200; // 2%
-  const REFERRER_FEE_BPS = 500; // 5%
   const TOKEN_DECIMALS = 6; // Similar to USDC
+  const COMMISSION_RATE = 10; // 10%
 
   // Helper function to convert values based on decimals
   const tokenAmount = (amount: number) => {
-    return new anchor.BN(amount * Math.pow(10, TOKEN_DECIMALS));
+    return amount * Math.pow(10, TOKEN_DECIMALS);
   };
+
+  // PDAs
+  let merchantPDA: anchor.web3.PublicKey;
+  let affiliatePDA: anchor.web3.PublicKey;
+  let affiliateMerchantPDA: anchor.web3.PublicKey;
 
   it("Airdrop SOL to test accounts", async () => {
     // Airdrop SOL to user wallet
     const sig = await connection.requestAirdrop(user.publicKey, 2_000_000_000);
     await connection.confirmTransaction(sig);
 
-    // Airdrop to platform, merchant, and referrer wallets
-    for (const wallet of [platformWallet, merchantWallet, referrerWallet]) {
+    // Airdrop to merchant, affiliate, and customer wallets
+    for (const wallet of [merchantWallet, affiliateWallet, customerWallet]) {
       const walletSig = await connection.requestAirdrop(
         wallet.publicKey,
         1_000_000_000
@@ -73,93 +76,64 @@ describe("reflink", () => {
         connection,
         user.payer,
         tokenMint,
-        platformWallet.publicKey
-      ),
-      getOrCreateAssociatedTokenAccount(
-        connection,
-        user.payer,
-        tokenMint,
         merchantWallet.publicKey
       ),
       getOrCreateAssociatedTokenAccount(
         connection,
         user.payer,
         tokenMint,
-        referrerWallet.publicKey
+        affiliateWallet.publicKey
       ),
       getOrCreateAssociatedTokenAccount(
         connection,
         user.payer,
         tokenMint,
-        user.publicKey
+        customerWallet.publicKey
       ),
     ]);
 
-    platformTokenAccount = accounts[0].address;
-    merchantTokenAccount = accounts[1].address;
-    referrerTokenAccount = accounts[2].address;
-    buyerTokenAccount = accounts[3].address;
+    merchantTokenAccount = accounts[0].address;
+    affiliateTokenAccount = accounts[1].address;
+    customerTokenAccount = accounts[2].address;
 
-    // Mint some tokens to the buyer for testing
+    // Mint some tokens to the customer for testing
     await mintTo(
       connection,
       user.payer,
       tokenMint,
-      buyerTokenAccount,
+      customerTokenAccount,
       user.publicKey,
-      1_000_000_000, // 1000 tokens with 6 decimals
+      tokenAmount(1000), // 1000 tokens with 6 decimals
       []
     );
 
-    // Verify the buyer has tokens
+    // Verify the customer has tokens
     const tokenBalance = await connection.getTokenAccountBalance(
-      buyerTokenAccount
+      customerTokenAccount
     );
     assert.equal(
       tokenBalance.value.uiAmount,
       1000,
-      "Buyer should have 1000 tokens"
+      "Customer should have 1000 tokens"
     );
   });
 
-  it("Initialize Platform", async () => {
-    // Derive Platform PDA
-    const [platformPDA] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from("platform")],
-      program.programId
-    );
-
-    await program.methods
-      .initializePlatform(PLATFORM_FEE_BPS)
-      .accounts({
-        platform: platformPDA,
-        authority: platformWallet.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([platformWallet])
-      .rpc();
-
-    // Verify platform account data
-    const platformAccount = await program.account.platform.fetch(platformPDA);
-    assert.equal(
-      platformAccount.feeBasisPoints,
-      PLATFORM_FEE_BPS,
-      "Platform fee not set correctly"
-    );
-  });
-
-  it("Create Merchant", async () => {
+  it("Register Merchant", async () => {
     // Derive Merchant PDA
-    const [merchantPDA] = await anchor.web3.PublicKey.findProgramAddress(
+    [merchantPDA] = await anchor.web3.PublicKey.findProgramAddress(
       [Buffer.from("merchant"), merchantWallet.publicKey.toBuffer()],
       program.programId
     );
 
     await program.methods
-      .createMerchant("Test Merchant")
+      .registerMerchant(
+        "Test Merchant",
+        COMMISSION_RATE,
+        "https://testsite.com"
+      )
       .accounts({
-        merchant: merchantPDA,
         authority: merchantWallet.publicKey,
+        merchant: merchantPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([merchantWallet])
@@ -172,154 +146,157 @@ describe("reflink", () => {
       "Merchant authority does not match"
     );
     assert.equal(merchantAccount.name, "Test Merchant");
+    assert.equal(merchantAccount.commissionRate, COMMISSION_RATE);
+    assert.equal(merchantAccount.websiteUrl, "https://testsite.com");
     assert.equal(merchantAccount.isActive, true, "Merchant should be active");
+    assert.equal(merchantAccount.totalRevenue, 0);
+    assert.equal(merchantAccount.totalReferrals, 0);
   });
 
-  it("Create Affiliate Program", async () => {
-    // Derive Merchant and Affiliate Program PDAs
-    const [merchantPDA] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from("merchant"), merchantWallet.publicKey.toBuffer()],
+  it("Register Affiliate", async () => {
+    // Derive Affiliate PDA
+    [affiliatePDA] = await anchor.web3.PublicKey.findProgramAddress(
+      [Buffer.from("affiliate"), affiliateWallet.publicKey.toBuffer()],
       program.programId
     );
-    const [affiliateProgramPDA] =
-      await anchor.web3.PublicKey.findProgramAddress(
-        [Buffer.from("affiliate_program"), merchantPDA.toBuffer()],
-        program.programId
-      );
 
     await program.methods
-      .createAffiliateProgram("Test Affiliate Program", REFERRER_FEE_BPS)
+      .registerAffiliate("Test Affiliate")
       .accounts({
-        affiliateProgram: affiliateProgramPDA,
-        merchant: merchantPDA,
-        authority: merchantWallet.publicKey,
+        authority: affiliateWallet.publicKey,
+        affiliate: affiliatePDA,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .signers([merchantWallet])
+      .signers([affiliateWallet])
       .rpc();
 
-    // Verify affiliate program account data
-    const affiliateProgramAccount =
-      await program.account.affiliateProgram.fetch(affiliateProgramPDA);
+    // Verify affiliate account data
+    const affiliateAccount = await program.account.affiliate.fetch(
+      affiliatePDA
+    );
     assert.ok(
-      affiliateProgramAccount.merchant.equals(merchantPDA),
-      "Merchant key does not match"
+      affiliateAccount.authority.equals(affiliateWallet.publicKey),
+      "Affiliate authority does not match"
     );
-    assert.equal(affiliateProgramAccount.name, "Test Affiliate Program");
-    assert.equal(
-      affiliateProgramAccount.referrerFeeBasisPoints,
-      REFERRER_FEE_BPS,
-      "Referrer fee not set correctly"
-    );
-    assert.equal(
-      affiliateProgramAccount.isActive,
-      true,
-      "Affiliate program should be active"
-    );
+    assert.equal(affiliateAccount.name, "Test Affiliate");
+    assert.equal(affiliateAccount.totalCommission, 0);
+    assert.equal(affiliateAccount.totalReferrals, 0);
   });
 
-  it("Create Referral Link", async () => {
-    // Derive Merchant, Affiliate Program, and Referral Link PDAs
-    const [merchantPDA] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from("merchant"), merchantWallet.publicKey.toBuffer()],
-      program.programId
-    );
-    const [affiliateProgramPDA] =
-      await anchor.web3.PublicKey.findProgramAddress(
-        [Buffer.from("affiliate_program"), merchantPDA.toBuffer()],
-        program.programId
-      );
-    const [referralLinkPDA] = await anchor.web3.PublicKey.findProgramAddress(
+  it("Join Merchant", async () => {
+    // Derive AffiliateMerchant PDA
+    [affiliateMerchantPDA] = await anchor.web3.PublicKey.findProgramAddress(
       [
-        Buffer.from("referral_link"),
-        affiliateProgramPDA.toBuffer(),
-        referrerWallet.publicKey.toBuffer(),
+        Buffer.from("affiliate-merchant"),
+        affiliatePDA.toBuffer(),
+        merchantPDA.toBuffer(),
       ],
       program.programId
     );
 
     await program.methods
-      .createReferralLink("TESTCODE123")
+      .joinMerchant()
       .accounts({
-        referralLink: referralLinkPDA,
-        affiliateProgram: affiliateProgramPDA,
-        referrer: referrerWallet.publicKey,
+        authority: affiliateWallet.publicKey,
+        affiliate: affiliatePDA,
+        merchant: merchantPDA,
+        affiliateMerchant: affiliateMerchantPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .signers([referrerWallet])
+      .signers([affiliateWallet])
       .rpc();
 
-    // Verify referral link account data
-    const referralLinkAccount = await program.account.referralLink.fetch(
-      referralLinkPDA
+    // Verify affiliate-merchant relationship account data
+    const affiliateMerchantAccount =
+      await program.account.affiliateMerchant.fetch(affiliateMerchantPDA);
+    assert.ok(
+      affiliateMerchantAccount.merchant.equals(merchantPDA),
+      "Merchant PDA does not match"
     );
     assert.ok(
-      referralLinkAccount.affiliateProgram.equals(affiliateProgramPDA),
-      "Affiliate program key does not match"
+      affiliateMerchantAccount.affiliate.equals(affiliatePDA),
+      "Affiliate PDA does not match"
     );
-    assert.ok(
-      referralLinkAccount.referrer.equals(referrerWallet.publicKey),
-      "Referrer key does not match"
-    );
-    assert.equal(referralLinkAccount.code, "TESTCODE123");
-    assert.equal(referralLinkAccount.clickCount, 0);
-    assert.equal(referralLinkAccount.conversionCount, 0);
-    assert.equal(referralLinkAccount.totalSales, 0);
-    assert.equal(referralLinkAccount.totalCommission, 0);
-    assert.equal(referralLinkAccount.isActive, true);
+    assert.equal(affiliateMerchantAccount.commissionEarned, 0);
+    assert.equal(affiliateMerchantAccount.successfulReferrals, 0);
   });
 
-  it("Process Sale", async () => {
-    // Derive all necessary PDAs
-    const [platformPDA] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from("platform")],
-      program.programId
-    );
-    const [merchantPDA] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from("merchant"), merchantWallet.publicKey.toBuffer()],
-      program.programId
-    );
-    const [affiliateProgramPDA] =
-      await anchor.web3.PublicKey.findProgramAddress(
-        [Buffer.from("affiliate_program"), merchantPDA.toBuffer()],
-        program.programId
-      );
-    const [referralLinkPDA] = await anchor.web3.PublicKey.findProgramAddress(
-      [
-        Buffer.from("referral_link"),
-        affiliateProgramPDA.toBuffer(),
-        referrerWallet.publicKey.toBuffer(),
-      ],
-      program.programId
-    );
-
-    const saleAmount = tokenAmount(100); // 100 tokens
+  it("Process Purchase", async () => {
+    const purchaseAmount = tokenAmount(100); // 100 tokens
 
     await program.methods
-      .processSale(saleAmount)
+      .processPurchase(new anchor.BN(purchaseAmount))
       .accounts({
-        platform: platformPDA,
+        customer: customerWallet.publicKey,
         merchant: merchantPDA,
-        affiliateProgram: affiliateProgramPDA,
-        referralLink: referralLinkPDA,
-        buyer: user.publicKey,
-        buyerTokenAccount: buyerTokenAccount,
+        affiliate: affiliatePDA,
+        affiliateMerchant: affiliateMerchantPDA,
+        customerTokenAccount: customerTokenAccount,
+        affiliateTokenAccount: affiliateTokenAccount,
         merchantTokenAccount: merchantTokenAccount,
-        referrerTokenAccount: referrerTokenAccount,
-        platformTokenAccount: platformTokenAccount,
         tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
       })
+      .signers([customerWallet])
       .rpc();
 
-    // Verify referral link stats were updated
-    const referralLinkAccount = await program.account.referralLink.fetch(
-      referralLinkPDA
+    // Verify updates to accounts
+    const merchantAccount = await program.account.merchant.fetch(merchantPDA);
+    const affiliateAccount = await program.account.affiliate.fetch(
+      affiliatePDA
     );
-    assert.equal(referralLinkAccount.conversionCount, 1);
-    assert.equal(referralLinkAccount.totalSales, saleAmount.toNumber());
+    const affiliateMerchantAccount =
+      await program.account.affiliateMerchant.fetch(affiliateMerchantPDA);
 
-    // Note: You might want to add more detailed checks for token balance changes
+    // Expected amounts
+    const expectedCommission = purchaseAmount * (COMMISSION_RATE / 100);
+    const expectedMerchantAmount = purchaseAmount - expectedCommission;
+
+    // Verify merchant stats were updated
+    assert.equal(merchantAccount.totalRevenue, purchaseAmount);
+    assert.equal(merchantAccount.totalReferrals, 1);
+
+    // Verify affiliate stats were updated
+    assert.equal(affiliateAccount.totalCommission, expectedCommission);
+    assert.equal(affiliateAccount.totalReferrals, 1);
+
+    // Verify relationship stats were updated
+    assert.equal(affiliateMerchantAccount.commissionEarned, expectedCommission);
+    assert.equal(affiliateMerchantAccount.successfulReferrals, 1);
+
+    // Verify token balances
+    const merchantTokenBalance = await connection.getTokenAccountBalance(
+      merchantTokenAccount
+    );
+    const affiliateTokenBalance = await connection.getTokenAccountBalance(
+      affiliateTokenAccount
+    );
+    const customerTokenBalance = await connection.getTokenAccountBalance(
+      customerTokenAccount
+    );
+
+    assert.approximately(
+      merchantTokenBalance.value.uiAmount || 0,
+      expectedMerchantAmount / Math.pow(10, TOKEN_DECIMALS),
+      0.001,
+      "Merchant should have received payment"
+    );
+
+    assert.approximately(
+      affiliateTokenBalance.value.uiAmount || 0,
+      expectedCommission / Math.pow(10, TOKEN_DECIMALS),
+      0.001,
+      "Affiliate should have received commission"
+    );
+
+    assert.approximately(
+      customerTokenBalance.value.uiAmount || 0,
+      (1000 * Math.pow(10, TOKEN_DECIMALS) - purchaseAmount) /
+        Math.pow(10, TOKEN_DECIMALS),
+      0.001,
+      "Customer balance should be reduced by purchase amount"
+    );
   });
 
-  // Additional tests for other methods like incrementClick, updatePlatformFee, etc.
+  // Additional tests for other methods like updateMerchant, updateAffiliate, etc.
 });

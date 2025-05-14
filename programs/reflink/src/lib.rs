@@ -7,546 +7,339 @@ declare_id!("2BkHiWJxLd91RWQWWcr97ggCsdA3PY1MTRoC9AJuZad9");
 pub mod reflink {
     use super::*;
 
-    pub fn initialize_platform(
-        ctx: Context<InitializePlatform>,
-        platform_fee_basis_points: u16,
+    // Merchant Management
+    pub fn register_merchant(
+        ctx: Context<RegisterMerchant>,
+        name: String,
+        commission_rate: u8,
+        website_url: String,
     ) -> Result<()> {
-        require!(
-            platform_fee_basis_points <= 10000,
-            RefLinkError::InvalidFeeBasisPoints
-        );
-
-        let platform = &mut ctx.accounts.platform;
-        platform.authority = ctx.accounts.authority.key();
-        platform.fee_basis_points = platform_fee_basis_points;
-        platform.bump = ctx.bumps.platform;
-
-        msg!(
-            "Reflink platform initialized with fee of {}bp",
-            platform_fee_basis_points
-        );
-        Ok(())
-    }
-
-    pub fn create_merchant(ctx: Context<CreateMerchant>, merchant_name: String) -> Result<()> {
-        require!(merchant_name.len() <= 50, RefLinkError::NameTooLong);
+        require!(commission_rate <= 100, ErrorCode::InvalidCommissionRate);
 
         let merchant = &mut ctx.accounts.merchant;
         merchant.authority = ctx.accounts.authority.key();
-        merchant.name = merchant_name.clone();
+        merchant.name = name;
+        merchant.commission_rate = commission_rate;
+        merchant.website_url = website_url;
+        merchant.total_revenue = 0;
+        merchant.total_referrals = 0;
         merchant.is_active = true;
         merchant.bump = ctx.bumps.merchant;
 
-        msg!("Merchant account created for {}", merchant_name);
         Ok(())
     }
 
-    pub fn create_affiliate_program(
-        ctx: Context<CreateAffiliateProgram>,
-        program_name: String,
-        referrer_fee_basis_points: u16,
+    pub fn update_merchant(
+        ctx: Context<UpdateMerchant>,
+        name: Option<String>,
+        commission_rate: Option<u8>,
+        website_url: Option<String>,
+        is_active: Option<bool>,
     ) -> Result<()> {
-        require!(program_name.len() <= 50, RefLinkError::NameTooLong);
-        require!(
-            referrer_fee_basis_points <= 10000,
-            RefLinkError::InvalidFeeBasisPoints
-        );
-
-        let affiliate_program = &mut ctx.accounts.affiliate_program;
-        affiliate_program.merchant = ctx.accounts.merchant.key();
-        affiliate_program.name = program_name.clone();
-        affiliate_program.referrer_fee_basis_points = referrer_fee_basis_points;
-        affiliate_program.is_active = true;
-        affiliate_program.bump = ctx.bumps.affiliate_program;
-
-        msg!(
-            "Affiliate program '{}' created with referrer fee of {}bp",
-            program_name,
-            referrer_fee_basis_points
-        );
-        Ok(())
-    }
-
-    pub fn create_referral_link(
-        ctx: Context<CreateReferralLink>,
-        unique_code: String,
-    ) -> Result<()> {
-        require!(unique_code.len() <= 20, RefLinkError::RefCodeTooLong);
-
-        let referral_link = &mut ctx.accounts.referral_link;
-        referral_link.affiliate_program = ctx.accounts.affiliate_program.key();
-        referral_link.referrer = ctx.accounts.referrer.key();
-        referral_link.code = unique_code.clone();
-        referral_link.click_count = 0;
-        referral_link.conversion_count = 0;
-        referral_link.total_sales = 0;
-        referral_link.total_commission = 0;
-        referral_link.is_active = true;
-        referral_link.bump = ctx.bumps.referral_link;
-
-        msg!("Referral link created with code: {}", unique_code);
-        Ok(())
-    }
-
-    pub fn process_sale(ctx: Context<ProcessSale>, amount: u64) -> Result<()> {
-        // Validate the transaction
-        require!(amount > 0, RefLinkError::InvalidAmount);
-        require!(
-            ctx.accounts.affiliate_program.is_active,
-            RefLinkError::InactiveAffiliateProgram
-        );
-        require!(
-            ctx.accounts.referral_link.is_active,
-            RefLinkError::InactiveReferralLink
-        );
-
-        // Calculate commission amounts
-        let platform_fee_basis_points = ctx.accounts.platform.fee_basis_points;
-        let referrer_fee_basis_points = ctx.accounts.affiliate_program.referrer_fee_basis_points;
-
-        // Calculate fees (10000 basis points = 100%)
-        let platform_fee = amount
-            .checked_mul(platform_fee_basis_points as u64)
-            .unwrap()
-            .checked_div(10000)
-            .unwrap();
-
-        let referrer_fee = amount
-            .checked_mul(referrer_fee_basis_points as u64)
-            .unwrap()
-            .checked_div(10000)
-            .unwrap();
-
-        let merchant_amount = amount
-            .checked_sub(platform_fee)
-            .unwrap()
-            .checked_sub(referrer_fee)
-            .unwrap();
-
-        // Transfer platform fee
-        if platform_fee > 0 {
-            token::transfer(
-                CpiContext::new(
-                    ctx.accounts.token_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.buyer_token_account.to_account_info(),
-                        to: ctx.accounts.platform_token_account.to_account_info(),
-                        authority: ctx.accounts.buyer.to_account_info(),
-                    },
-                ),
-                platform_fee,
-            )?;
-        }
-
-        // Transfer referrer commission
-        if referrer_fee > 0 {
-            token::transfer(
-                CpiContext::new(
-                    ctx.accounts.token_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.buyer_token_account.to_account_info(),
-                        to: ctx.accounts.referrer_token_account.to_account_info(),
-                        authority: ctx.accounts.buyer.to_account_info(),
-                    },
-                ),
-                referrer_fee,
-            )?;
-
-            // Update the referral link statistics
-            let referral_link = &mut ctx.accounts.referral_link;
-            referral_link.conversion_count = referral_link.conversion_count.checked_add(1).unwrap();
-            referral_link.total_sales = referral_link.total_sales.checked_add(amount).unwrap();
-            referral_link.total_commission = referral_link
-                .total_commission
-                .checked_add(referrer_fee)
-                .unwrap();
-        }
-
-        // Transfer merchant amount
-        token::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.buyer_token_account.to_account_info(),
-                    to: ctx.accounts.merchant_token_account.to_account_info(),
-                    authority: ctx.accounts.buyer.to_account_info(),
-                },
-            ),
-            merchant_amount,
-        )?;
-
-        msg!("Sale processed: {} total amount", amount);
-        msg!("  Merchant received: {}", merchant_amount);
-        msg!("  Referrer commission: {}", referrer_fee);
-        msg!("  Platform fee: {}", platform_fee);
-
-        Ok(())
-    }
-
-    pub fn increment_click(ctx: Context<IncrementClick>) -> Result<()> {
-        let referral_link = &mut ctx.accounts.referral_link;
-        require!(referral_link.is_active, RefLinkError::InactiveReferralLink);
-
-        referral_link.click_count = referral_link.click_count.checked_add(1).unwrap();
-
-        msg!("Click tracked for referral link: {}", referral_link.code);
-        Ok(())
-    }
-
-    pub fn update_platform_fee(
-        ctx: Context<UpdatePlatformFee>,
-        new_fee_basis_points: u16,
-    ) -> Result<()> {
-        require!(
-            new_fee_basis_points <= 10000,
-            RefLinkError::InvalidFeeBasisPoints
-        );
-
-        let platform = &mut ctx.accounts.platform;
-        platform.fee_basis_points = new_fee_basis_points;
-
-        msg!("Platform fee updated to {}bp", new_fee_basis_points);
-        Ok(())
-    }
-
-    pub fn toggle_merchant_status(ctx: Context<ToggleMerchantStatus>) -> Result<()> {
         let merchant = &mut ctx.accounts.merchant;
-        merchant.is_active = !merchant.is_active;
 
-        let status = if merchant.is_active {
-            "active"
-        } else {
-            "inactive"
-        };
-        msg!("Merchant status toggled to: {}", status);
+        if let Some(new_name) = name {
+            merchant.name = new_name;
+        }
+
+        if let Some(new_rate) = commission_rate {
+            require!(new_rate <= 100, ErrorCode::InvalidCommissionRate);
+            merchant.commission_rate = new_rate;
+        }
+
+        if let Some(new_url) = website_url {
+            merchant.website_url = new_url;
+        }
+
+        if let Some(active_status) = is_active {
+            merchant.is_active = active_status;
+        }
+
         Ok(())
     }
 
-    pub fn toggle_affiliate_program_status(
-        ctx: Context<ToggleAffiliateProgramStatus>,
-    ) -> Result<()> {
-        let affiliate_program = &mut ctx.accounts.affiliate_program;
-        affiliate_program.is_active = !affiliate_program.is_active;
+    // Affiliate Management
+    pub fn register_affiliate(ctx: Context<RegisterAffiliate>, name: String) -> Result<()> {
+        let affiliate = &mut ctx.accounts.affiliate;
+        affiliate.authority = ctx.accounts.authority.key();
+        affiliate.name = name;
+        affiliate.total_commission = 0;
+        affiliate.total_referrals = 0;
+        affiliate.bump = ctx.bumps.affiliate;
 
-        let status = if affiliate_program.is_active {
-            "active"
-        } else {
-            "inactive"
-        };
-        msg!("Affiliate program status toggled to: {}", status);
         Ok(())
     }
 
-    pub fn toggle_referral_link_status(ctx: Context<ToggleReferralLinkStatus>) -> Result<()> {
-        let referral_link = &mut ctx.accounts.referral_link;
-        referral_link.is_active = !referral_link.is_active;
+    pub fn update_affiliate(ctx: Context<UpdateAffiliate>, name: Option<String>) -> Result<()> {
+        let affiliate = &mut ctx.accounts.affiliate;
 
-        let status = if referral_link.is_active {
-            "active"
-        } else {
-            "inactive"
+        if let Some(new_name) = name {
+            affiliate.name = new_name;
+        }
+
+        Ok(())
+    }
+
+    // Affiliate-Merchant Relationship
+    pub fn join_merchant(ctx: Context<JoinMerchant>) -> Result<()> {
+        let relation = &mut ctx.accounts.affiliate_merchant;
+        relation.merchant = ctx.accounts.merchant.key();
+        relation.affiliate = ctx.accounts.affiliate.key();
+        relation.commission_earned = 0;
+        relation.successful_referrals = 0;
+        relation.bump = ctx.bumps.affiliate_merchant;
+
+        Ok(())
+    }
+
+    // Customer Purchase
+    pub fn process_purchase(ctx: Context<ProcessPurchase>, amount: u64) -> Result<()> {
+        // Calculate commission
+        let merchant = &ctx.accounts.merchant;
+        let commission_rate = merchant.commission_rate as u64;
+        let commission_amount = (amount * commission_rate) / 100;
+        let merchant_amount = amount - commission_amount;
+
+        // Transfer commission to affiliate
+        if commission_amount > 0 {
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.customer_token_account.to_account_info(),
+                to: ctx.accounts.affiliate_token_account.to_account_info(),
+                authority: ctx.accounts.customer.to_account_info(),
+            };
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+            token::transfer(cpi_ctx, commission_amount)?;
+        }
+
+        // Transfer remainder to merchant
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.customer_token_account.to_account_info(),
+            to: ctx.accounts.merchant_token_account.to_account_info(),
+            authority: ctx.accounts.customer.to_account_info(),
         };
-        msg!("Referral link status toggled to: {}", status);
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, merchant_amount)?;
+
+        // Update statistics
+        let merchant_account = &mut ctx.accounts.merchant;
+        merchant_account.total_revenue =
+            merchant_account.total_revenue.checked_add(amount).unwrap();
+        merchant_account.total_referrals = merchant_account.total_referrals.checked_add(1).unwrap();
+
+        let affiliate_account = &mut ctx.accounts.affiliate;
+        affiliate_account.total_commission = affiliate_account
+            .total_commission
+            .checked_add(commission_amount)
+            .unwrap();
+        affiliate_account.total_referrals =
+            affiliate_account.total_referrals.checked_add(1).unwrap();
+
+        let relation = &mut ctx.accounts.affiliate_merchant;
+        relation.commission_earned = relation
+            .commission_earned
+            .checked_add(commission_amount)
+            .unwrap();
+        relation.successful_referrals = relation.successful_referrals.checked_add(1).unwrap();
+
         Ok(())
     }
 }
 
-#[derive(Accounts)]
-pub struct InitializePlatform<'info> {
-    #[account(
-        init,
-        payer = authority,
-        space = Platform::LEN,
-        seeds = [b"platform"],
-        bump
-    )]
-    pub platform: Account<'info, Platform>,
+// Account Structures
+#[account]
+pub struct Merchant {
+    pub authority: Pubkey,    // Merchant wallet address
+    pub name: String,         // Name of the merchant
+    pub commission_rate: u8,  // Commission percentage (0-100)
+    pub website_url: String,  // Website URL
+    pub total_revenue: u64,   // Total revenue earned
+    pub total_referrals: u64, // Total number of referrals
+    pub is_active: bool,      // Merchant status
+    pub bump: u8,             // PDA bump
+}
 
+#[account]
+pub struct Affiliate {
+    pub authority: Pubkey,     // Affiliate wallet address
+    pub name: String,          // Name of the affiliate
+    pub total_commission: u64, // Total commission earned
+    pub total_referrals: u64,  // Total successful referrals
+    pub bump: u8,              // PDA bump
+}
+
+#[account]
+pub struct AffiliateMerchant {
+    pub merchant: Pubkey,          // Merchant PDA
+    pub affiliate: Pubkey,         // Affiliate PDA
+    pub commission_earned: u64,    // Commission earned from this merchant
+    pub successful_referrals: u64, // Successful referrals for this merchant
+    pub bump: u8,                  // PDA bump
+}
+
+// Context Structures
+#[derive(Accounts)]
+pub struct InitializeProgram<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
-
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct CreateMerchant<'info> {
+pub struct RegisterMerchant<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
     #[account(
         init,
         payer = authority,
-        space = Merchant::LEN,
+        space = 8 + 32 + 4 + 50 + 1 + 4 + 100 + 8 + 8 + 1 + 1, // Allocate space for Merchant account
         seeds = [b"merchant", authority.key().as_ref()],
         bump
     )]
     pub merchant: Account<'info, Merchant>,
 
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateMerchant<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"merchant", authority.key().as_ref()],
+        bump = merchant.bump,
+        constraint = merchant.authority == authority.key() @ ErrorCode::Unauthorized
+    )]
+    pub merchant: Account<'info, Merchant>,
 
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct CreateAffiliateProgram<'info> {
+pub struct RegisterAffiliate<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
     #[account(
         init,
         payer = authority,
-        space = AffiliateProgram::LEN,
-        seeds = [b"affiliate_program", merchant.key().as_ref()],
+        space = 8 + 32 + 4 + 50 + 8 + 8 + 1, // Allocate space for Affiliate account
+        seeds = [b"affiliate", authority.key().as_ref()],
         bump
     )]
-    pub affiliate_program: Account<'info, AffiliateProgram>,
+    pub affiliate: Account<'info, Affiliate>,
 
-    #[account(
-        constraint = merchant.authority == authority.key() @ RefLinkError::NotMerchantAuthority,
-        constraint = merchant.is_active @ RefLinkError::InactiveMerchant
-    )]
-    pub merchant: Account<'info, Merchant>,
+    pub system_program: Program<'info, System>,
+}
 
+#[derive(Accounts)]
+pub struct UpdateAffiliate<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
 
+    #[account(
+        mut,
+        seeds = [b"affiliate", authority.key().as_ref()],
+        bump = affiliate.bump,
+        constraint = affiliate.authority == authority.key() @ ErrorCode::Unauthorized
+    )]
+    pub affiliate: Account<'info, Affiliate>,
+
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct CreateReferralLink<'info> {
-    #[account(
-        init,
-        payer = referrer,
-        space = ReferralLink::LEN,
-        seeds = [
-            b"referral_link", 
-            affiliate_program.key().as_ref(),
-            referrer.key().as_ref()
-        ],
-        bump
-    )]
-    pub referral_link: Account<'info, ReferralLink>,
-
-    #[account(
-        constraint = affiliate_program.is_active @ RefLinkError::InactiveAffiliateProgram
-    )]
-    pub affiliate_program: Account<'info, AffiliateProgram>,
-
+pub struct JoinMerchant<'info> {
     #[account(mut)]
-    pub referrer: Signer<'info>,
+    pub authority: Signer<'info>,
 
-    pub system_program: Program<'info, System>,
-}
+    #[account(
+        seeds = [b"affiliate", authority.key().as_ref()],
+        bump = affiliate.bump,
+        constraint = affiliate.authority == authority.key() @ ErrorCode::Unauthorized
+    )]
+    pub affiliate: Account<'info, Affiliate>,
 
-#[derive(Accounts)]
-pub struct ProcessSale<'info> {
-    pub platform: Account<'info, Platform>,
-
+    #[account(
+        seeds = [b"merchant", merchant.authority.as_ref()],
+        bump = merchant.bump,
+        constraint = merchant.is_active @ ErrorCode::MerchantInactive
+    )]
     pub merchant: Account<'info, Merchant>,
 
     #[account(
-        constraint = affiliate_program.merchant == merchant.key() @ RefLinkError::InvalidAffiliateProgramMerchant
+        init,
+        payer = authority,
+        space = 8 + 32 + 32 + 8 + 8 + 1, // Allocate space for AffiliateMerchant account
+        seeds = [b"affiliate-merchant", affiliate.key().as_ref(), merchant.key().as_ref()],
+        bump
     )]
-    pub affiliate_program: Account<'info, AffiliateProgram>,
+    pub affiliate_merchant: Account<'info, AffiliateMerchant>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ProcessPurchase<'info> {
+    #[account(mut)]
+    pub customer: Signer<'info>,
 
     #[account(
-        constraint = referral_link.affiliate_program == affiliate_program.key() @ RefLinkError::InvalidReferralLinkAffiliateProgram,
-        mut
+        mut,
+        seeds = [b"merchant", merchant.authority.as_ref()],
+        bump = merchant.bump,
+        constraint = merchant.is_active @ ErrorCode::MerchantInactive
     )]
-    pub referral_link: Account<'info, ReferralLink>,
+    pub merchant: Account<'info, Merchant>,
+
+    #[account(
+        mut,
+        seeds = [b"affiliate", affiliate.authority.as_ref()],
+        bump = affiliate.bump
+    )]
+    pub affiliate: Account<'info, Affiliate>,
+
+    #[account(
+        mut,
+        seeds = [b"affiliate-merchant", affiliate.key().as_ref(), merchant.key().as_ref()],
+        bump = affiliate_merchant.bump
+    )]
+    pub affiliate_merchant: Account<'info, AffiliateMerchant>,
 
     #[account(mut)]
-    pub buyer: Signer<'info>,
+    pub customer_token_account: Account<'info, TokenAccount>,
 
     #[account(
         mut,
-        constraint = buyer_token_account.owner == buyer.key() @ RefLinkError::InvalidOwner
+        constraint = affiliate_token_account.owner == affiliate.authority @ ErrorCode::InvalidTokenAccount
     )]
-    pub buyer_token_account: Account<'info, TokenAccount>,
+    pub affiliate_token_account: Account<'info, TokenAccount>,
 
     #[account(
         mut,
-        constraint = merchant_token_account.owner == merchant.authority @ RefLinkError::InvalidOwner
+        constraint = merchant_token_account.owner == merchant.authority @ ErrorCode::InvalidTokenAccount
     )]
     pub merchant_token_account: Account<'info, TokenAccount>,
 
-    #[account(
-        mut,
-        constraint = referrer_token_account.owner == referral_link.referrer @ RefLinkError::InvalidOwner
-    )]
-    pub referrer_token_account: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        constraint = platform_token_account.owner == platform.authority @ RefLinkError::InvalidOwner
-    )]
-    pub platform_token_account: Account<'info, TokenAccount>,
-
     pub token_program: Program<'info, Token>,
-}
-
-#[derive(Accounts)]
-pub struct IncrementClick<'info> {
-    #[account(mut)]
-    pub referral_link: Account<'info, ReferralLink>,
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct UpdatePlatformFee<'info> {
-    #[account(
-        mut,
-        constraint = platform.authority == authority.key() @ RefLinkError::NotPlatformAuthority
-    )]
-    pub platform: Account<'info, Platform>,
-
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct ToggleMerchantStatus<'info> {
-    #[account(
-        mut,
-        constraint = merchant.authority == authority.key() @ RefLinkError::NotMerchantAuthority
-    )]
-    pub merchant: Account<'info, Merchant>,
-
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct ToggleAffiliateProgramStatus<'info> {
-    #[account(
-        mut,
-        constraint = affiliate_program.merchant == merchant.key() @ RefLinkError::InvalidAffiliateProgramMerchant,
-        constraint = merchant.authority == authority.key() @ RefLinkError::NotMerchantAuthority
-    )]
-    pub affiliate_program: Account<'info, AffiliateProgram>,
-
-    pub merchant: Account<'info, Merchant>,
-
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct ToggleReferralLinkStatus<'info> {
-    #[account(
-        mut,
-        constraint = referral_link.referrer == authority.key() @ RefLinkError::NotReferrer
-    )]
-    pub referral_link: Account<'info, ReferralLink>,
-
-    pub authority: Signer<'info>,
-}
-
-#[account]
-pub struct Platform {
-    pub authority: Pubkey,
-    pub fee_basis_points: u16, // 100 = 1%, 10000 = 100%
-    pub bump: u8,
-}
-
-impl Platform {
-    pub const LEN: usize = 8 + // discriminator
-        32 +                   // authority
-        2 +                    // fee_basis_points
-        1; // bump
-}
-
-#[account]
-pub struct Merchant {
-    pub authority: Pubkey,
-    pub name: String, // merchant store name
-    pub is_active: bool,
-    pub bump: u8,
-}
-
-impl Merchant {
-    pub const LEN: usize = 8 + // discriminator
-        32 +                   // authority
-        4 + 50 +               // name (max length 50)
-        1 +                    // is_active
-        1; // bump
-}
-
-#[account]
-pub struct AffiliateProgram {
-    pub merchant: Pubkey,               // merchant public key
-    pub name: String,                   // program name
-    pub referrer_fee_basis_points: u16, // 100 = 1%, 10000 = 100%
-    pub is_active: bool,
-    pub bump: u8,
-}
-
-impl AffiliateProgram {
-    pub const LEN: usize = 8 + // discriminator
-        32 +                   // merchant
-        4 + 50 +               // name (max length 50)
-        2 +                    // referrer_fee_basis_points
-        1 +                    // is_active
-        1; // bump
-}
-
-#[account]
-pub struct ReferralLink {
-    pub affiliate_program: Pubkey, // affiliate program this link belongs to
-    pub referrer: Pubkey,          // referrer public key
-    pub code: String,              // unique referral code
-    pub click_count: u64,          // number of clicks
-    pub conversion_count: u64,     // number of conversions
-    pub total_sales: u64,          // total sales amount
-    pub total_commission: u64,     // total commission earned
-    pub is_active: bool,
-    pub bump: u8,
-}
-
-impl ReferralLink {
-    pub const LEN: usize = 8 + // discriminator
-        32 +                   // affiliate_program
-        32 +                   // referrer
-        4 + 20 +               // code (max length 20)
-        8 +                    // click_count
-        8 +                    // conversion_count
-        8 +                    // total_sales
-        8 +                    // total_commission
-        1 +                    // is_active
-        1; // bump
+    pub system_program: Program<'info, System>,
 }
 
 #[error_code]
-pub enum RefLinkError {
-    #[msg("Fee basis points must be <= 10000")]
-    InvalidFeeBasisPoints,
+pub enum ErrorCode {
+    #[msg("You are not authorized to perform this action")]
+    Unauthorized,
 
-    #[msg("Name too long")]
-    NameTooLong,
+    #[msg("Commission rate must be between 0 and 100")]
+    InvalidCommissionRate,
 
-    #[msg("Referral code too long")]
-    RefCodeTooLong,
+    #[msg("Merchant is not active")]
+    MerchantInactive,
 
-    #[msg("Invalid amount")]
-    InvalidAmount,
-
-    #[msg("Not platform authority")]
-    NotPlatformAuthority,
-
-    #[msg("Not merchant authority")]
-    NotMerchantAuthority,
-
-    #[msg("Not referrer")]
-    NotReferrer,
-
-    #[msg("Invalid affiliate program merchant")]
-    InvalidAffiliateProgramMerchant,
-
-    #[msg("Invalid referral link affiliate program")]
-    InvalidReferralLinkAffiliateProgram,
-
-    #[msg("Invalid token account owner")]
-    InvalidOwner,
-
-    #[msg("Merchant is inactive")]
-    InactiveMerchant,
-
-    #[msg("Affiliate program is inactive")]
-    InactiveAffiliateProgram,
-
-    #[msg("Referral link is inactive")]
-    InactiveReferralLink,
+    #[msg("Invalid token account")]
+    InvalidTokenAccount,
 }
