@@ -238,4 +238,142 @@ describe("reflink", () => {
       "Customer balance should be reduced by purchase amount"
     );
   });
+
+  it("Process Multiple Purchases", async () => {
+    // Airdrop more SOL to customer for multiple purchases
+    const customerAirdropSig = await connection.requestAirdrop(
+      customerWallet.publicKey,
+      2_000_000_000 // 2 SOL
+    );
+    await connection.confirmTransaction(customerAirdropSig);
+
+    const firstPurchaseAmount = new anchor.BN(200_000_000); // 0.2 SOL
+    const secondPurchaseAmount = new anchor.BN(200_000_000); // Same amount to test the issue
+
+    // Get initial balances
+    const initialMerchantBalance = await connection.getBalance(
+      merchantWallet.publicKey
+    );
+    const initialAffiliateBalance = await connection.getBalance(
+      affiliateWallet.publicKey
+    );
+    const initialCustomerBalance = await connection.getBalance(
+      customerWallet.publicKey
+    );
+
+    console.log("Initial balances:");
+    console.log("- Customer:", initialCustomerBalance);
+    console.log("- Merchant:", initialMerchantBalance);
+    console.log("- Affiliate:", initialAffiliateBalance);
+
+    // First purchase
+    console.log(
+      "\nAttempting first purchase of",
+      firstPurchaseAmount.toString(),
+      "lamports"
+    );
+    try {
+      const tx1 = await program.methods
+        .processPurchase(firstPurchaseAmount)
+        .accounts({
+          customer: customerWallet.publicKey,
+          merchant: merchantPDA,
+          affiliate: affiliatePDA,
+          affiliateMerchant: affiliateMerchantPDA,
+          merchantAuthority: merchantWallet.publicKey,
+          affiliateAuthority: affiliateWallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([customerWallet])
+        .rpc();
+
+      console.log("First purchase successful:", tx1);
+    } catch (e) {
+      console.error("First purchase failed:", e);
+      throw e;
+    }
+
+    // Add a delay between purchases
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    const midBalances = {
+      customer: await connection.getBalance(customerWallet.publicKey),
+      merchant: await connection.getBalance(merchantWallet.publicKey),
+      affiliate: await connection.getBalance(affiliateWallet.publicKey),
+    };
+
+    console.log("\nBalances after first purchase:");
+    console.log("- Customer:", midBalances.customer);
+    console.log("- Merchant:", midBalances.merchant);
+    console.log("- Affiliate:", midBalances.affiliate);
+
+    // Second purchase with same amount
+    console.log(
+      "\nAttempting second purchase of",
+      secondPurchaseAmount.toString(),
+      "lamports"
+    );
+    try {
+      const tx2 = await program.methods
+        .processPurchase(secondPurchaseAmount)
+        .accounts({
+          customer: customerWallet.publicKey,
+          merchant: merchantPDA,
+          affiliate: affiliatePDA,
+          affiliateMerchant: affiliateMerchantPDA,
+          merchantAuthority: merchantWallet.publicKey,
+          affiliateAuthority: affiliateWallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([customerWallet])
+        .rpc();
+
+      console.log("Second purchase successful:", tx2);
+    } catch (e) {
+      console.error("Second purchase failed:", e);
+      throw e;
+    }
+
+    const finalBalances = {
+      customer: await connection.getBalance(customerWallet.publicKey),
+      merchant: await connection.getBalance(merchantWallet.publicKey),
+      affiliate: await connection.getBalance(affiliateWallet.publicKey),
+    };
+
+    console.log("\nFinal balances:");
+    console.log("- Customer:", finalBalances.customer);
+    console.log("- Merchant:", finalBalances.merchant);
+    console.log("- Affiliate:", finalBalances.affiliate);
+
+    // Get final account states
+    const merchantAccount = await program.account.merchant.fetch(merchantPDA);
+    const affiliateAccount = await program.account.affiliate.fetch(
+      affiliatePDA
+    );
+    const affiliateMerchantAccount =
+      await program.account.affiliateMerchant.fetch(affiliateMerchantPDA);
+
+    console.log("\nFinal stats:");
+    console.log("Merchant revenue:", merchantAccount.totalRevenue.toString());
+    console.log(
+      "Merchant referrals:",
+      merchantAccount.totalReferrals.toString()
+    );
+    console.log(
+      "Affiliate commission:",
+      affiliateAccount.totalCommission.toString()
+    );
+    console.log(
+      "Affiliate referrals:",
+      affiliateAccount.totalReferrals.toString()
+    );
+    console.log(
+      "Relationship commission:",
+      affiliateMerchantAccount.commissionEarned.toString()
+    );
+    console.log(
+      "Relationship referrals:",
+      affiliateMerchantAccount.successfulReferrals.toString()
+    );
+  });
 });
