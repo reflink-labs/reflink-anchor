@@ -2,12 +2,6 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Reflink } from "../target/types/reflink";
 import { assert } from "chai";
-import {
-  createMint,
-  getOrCreateAssociatedTokenAccount,
-  mintTo,
-  TOKEN_PROGRAM_ID,
-} from "@solana/spl-token";
 
 describe("reflink", () => {
   // Configure the client to use the local cluster.
@@ -23,19 +17,7 @@ describe("reflink", () => {
   const affiliateWallet = anchor.web3.Keypair.generate();
   const customerWallet = anchor.web3.Keypair.generate();
 
-  // SPL Token accounts and mint
-  let tokenMint: anchor.web3.PublicKey;
-  let merchantTokenAccount: anchor.web3.PublicKey;
-  let affiliateTokenAccount: anchor.web3.PublicKey;
-  let customerTokenAccount: anchor.web3.PublicKey;
-
-  const TOKEN_DECIMALS = 6; // Similar to USDC
   const COMMISSION_RATE = 10; // 10%
-
-  // Helper function to convert values based on decimals
-  const tokenAmount = (amount: number) => {
-    return amount * Math.pow(10, TOKEN_DECIMALS);
-  };
 
   // PDAs
   let merchantPDA: anchor.web3.PublicKey;
@@ -55,67 +37,6 @@ describe("reflink", () => {
       );
       await connection.confirmTransaction(walletSig);
     }
-  });
-
-  it("Sets up SPL token mint and accounts", async () => {
-    // Create a new SPL token
-    tokenMint = await createMint(
-      connection,
-      user.payer,
-      user.publicKey,
-      null,
-      TOKEN_DECIMALS,
-      undefined,
-      undefined,
-      TOKEN_PROGRAM_ID
-    );
-
-    // Create token accounts for all participants
-    const accounts = await Promise.all([
-      getOrCreateAssociatedTokenAccount(
-        connection,
-        user.payer,
-        tokenMint,
-        merchantWallet.publicKey
-      ),
-      getOrCreateAssociatedTokenAccount(
-        connection,
-        user.payer,
-        tokenMint,
-        affiliateWallet.publicKey
-      ),
-      getOrCreateAssociatedTokenAccount(
-        connection,
-        user.payer,
-        tokenMint,
-        customerWallet.publicKey
-      ),
-    ]);
-
-    merchantTokenAccount = accounts[0].address;
-    affiliateTokenAccount = accounts[1].address;
-    customerTokenAccount = accounts[2].address;
-
-    // Mint some tokens to the customer for testing
-    await mintTo(
-      connection,
-      user.payer,
-      tokenMint,
-      customerTokenAccount,
-      user.publicKey,
-      tokenAmount(1000), // 1000 tokens with 6 decimals
-      []
-    );
-
-    // Verify the customer has tokens
-    const tokenBalance = await connection.getTokenAccountBalance(
-      customerTokenAccount
-    );
-    assert.equal(
-      tokenBalance.value.uiAmount,
-      1000,
-      "Customer should have 1000 tokens"
-    );
   });
 
   it("Register Merchant", async () => {
@@ -149,8 +70,8 @@ describe("reflink", () => {
     assert.equal(merchantAccount.commissionRate, COMMISSION_RATE);
     assert.equal(merchantAccount.websiteUrl, "https://testsite.com");
     assert.equal(merchantAccount.isActive, true, "Merchant should be active");
-    assert.equal(merchantAccount.totalRevenue, 0);
-    assert.equal(merchantAccount.totalReferrals, 0);
+    assert.equal(merchantAccount.totalRevenue.toString(), "0");
+    assert.equal(merchantAccount.totalReferrals.toString(), "0");
   });
 
   it("Register Affiliate", async () => {
@@ -179,8 +100,8 @@ describe("reflink", () => {
       "Affiliate authority does not match"
     );
     assert.equal(affiliateAccount.name, "Test Affiliate");
-    assert.equal(affiliateAccount.totalCommission, 0);
-    assert.equal(affiliateAccount.totalReferrals, 0);
+    assert.equal(affiliateAccount.totalCommission.toString(), "0");
+    assert.equal(affiliateAccount.totalReferrals.toString(), "0");
   });
 
   it("Join Merchant", async () => {
@@ -217,24 +138,33 @@ describe("reflink", () => {
       affiliateMerchantAccount.affiliate.equals(affiliatePDA),
       "Affiliate PDA does not match"
     );
-    assert.equal(affiliateMerchantAccount.commissionEarned, 0);
-    assert.equal(affiliateMerchantAccount.successfulReferrals, 0);
+    assert.equal(affiliateMerchantAccount.commissionEarned.toString(), "0");
+    assert.equal(affiliateMerchantAccount.successfulReferrals.toString(), "0");
   });
 
   it("Process Purchase", async () => {
-    const purchaseAmount = tokenAmount(100); // 100 tokens
+    const purchaseAmount = new anchor.BN(1_000_000_000); // 1 SOL
+
+    // Get initial balances
+    const initialMerchantBalance = await connection.getBalance(
+      merchantWallet.publicKey
+    );
+    const initialAffiliateBalance = await connection.getBalance(
+      affiliateWallet.publicKey
+    );
+    const initialCustomerBalance = await connection.getBalance(
+      customerWallet.publicKey
+    );
 
     await program.methods
-      .processPurchase(new anchor.BN(purchaseAmount))
+      .processPurchase(purchaseAmount)
       .accounts({
         customer: customerWallet.publicKey,
         merchant: merchantPDA,
         affiliate: affiliatePDA,
         affiliateMerchant: affiliateMerchantPDA,
-        customerTokenAccount: customerTokenAccount,
-        affiliateTokenAccount: affiliateTokenAccount,
-        merchantTokenAccount: merchantTokenAccount,
-        tokenProgram: TOKEN_PROGRAM_ID,
+        merchantAuthority: merchantWallet.publicKey,
+        affiliateAuthority: affiliateWallet.publicKey,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([customerWallet])
@@ -249,54 +179,63 @@ describe("reflink", () => {
       await program.account.affiliateMerchant.fetch(affiliateMerchantPDA);
 
     // Expected amounts
-    const expectedCommission = purchaseAmount * (COMMISSION_RATE / 100);
-    const expectedMerchantAmount = purchaseAmount - expectedCommission;
+    const expectedCommission = purchaseAmount.muln(COMMISSION_RATE).divn(100);
+    const expectedMerchantAmount = purchaseAmount.sub(expectedCommission);
 
     // Verify merchant stats were updated
-    assert.equal(merchantAccount.totalRevenue, purchaseAmount);
-    assert.equal(merchantAccount.totalReferrals, 1);
+    assert.equal(
+      merchantAccount.totalRevenue.toString(),
+      purchaseAmount.toString()
+    );
+    assert.equal(merchantAccount.totalReferrals.toString(), "1");
 
     // Verify affiliate stats were updated
-    assert.equal(affiliateAccount.totalCommission, expectedCommission);
-    assert.equal(affiliateAccount.totalReferrals, 1);
+    assert.equal(
+      affiliateAccount.totalCommission.toString(),
+      expectedCommission.toString()
+    );
+    assert.equal(affiliateAccount.totalReferrals.toString(), "1");
 
     // Verify relationship stats were updated
-    assert.equal(affiliateMerchantAccount.commissionEarned, expectedCommission);
-    assert.equal(affiliateMerchantAccount.successfulReferrals, 1);
+    assert.equal(
+      affiliateMerchantAccount.commissionEarned.toString(),
+      expectedCommission.toString()
+    );
+    assert.equal(affiliateMerchantAccount.successfulReferrals.toString(), "1");
 
-    // Verify token balances
-    const merchantTokenBalance = await connection.getTokenAccountBalance(
-      merchantTokenAccount
+    // Verify SOL balances
+    const finalMerchantBalance = await connection.getBalance(
+      merchantWallet.publicKey
     );
-    const affiliateTokenBalance = await connection.getTokenAccountBalance(
-      affiliateTokenAccount
+    const finalAffiliateBalance = await connection.getBalance(
+      affiliateWallet.publicKey
     );
-    const customerTokenBalance = await connection.getTokenAccountBalance(
-      customerTokenAccount
+    const finalCustomerBalance = await connection.getBalance(
+      customerWallet.publicKey
     );
 
+    // Check merchant received payment
     assert.approximately(
-      merchantTokenBalance.value.uiAmount || 0,
-      expectedMerchantAmount / Math.pow(10, TOKEN_DECIMALS),
-      0.001,
+      finalMerchantBalance - initialMerchantBalance,
+      expectedMerchantAmount.toNumber(),
+      1000000, // Allow for transaction fees
       "Merchant should have received payment"
     );
 
+    // Check affiliate received commission
     assert.approximately(
-      affiliateTokenBalance.value.uiAmount || 0,
-      expectedCommission / Math.pow(10, TOKEN_DECIMALS),
-      0.001,
+      finalAffiliateBalance - initialAffiliateBalance,
+      expectedCommission.toNumber(),
+      1000000, // Allow for transaction fees
       "Affiliate should have received commission"
     );
 
+    // Check customer balance was reduced
     assert.approximately(
-      customerTokenBalance.value.uiAmount || 0,
-      (1000 * Math.pow(10, TOKEN_DECIMALS) - purchaseAmount) /
-        Math.pow(10, TOKEN_DECIMALS),
-      0.001,
+      initialCustomerBalance - finalCustomerBalance,
+      purchaseAmount.toNumber(),
+      1000000, // Allow for transaction fees
       "Customer balance should be reduced by purchase amount"
     );
   });
-
-  // Additional tests for other methods like updateMerchant, updateAffiliate, etc.
 });

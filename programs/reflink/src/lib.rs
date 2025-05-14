@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use anchor_lang::solana_program::system_instruction;
 
 declare_id!("2BkHiWJxLd91RWQWWcr97ggCsdA3PY1MTRoC9AJuZad9");
 
@@ -102,30 +102,37 @@ pub mod reflink {
 
         // Transfer commission to affiliate
         if commission_amount > 0 {
-            let cpi_accounts = Transfer {
-                from: ctx.accounts.customer_token_account.to_account_info(),
-                to: ctx.accounts.affiliate_token_account.to_account_info(),
-                authority: ctx.accounts.customer.to_account_info(),
-            };
-            let cpi_program = ctx.accounts.token_program.to_account_info();
-            let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-            token::transfer(cpi_ctx, commission_amount)?;
+            let transfer_ix = system_instruction::transfer(
+                &ctx.accounts.customer.key(),
+                &ctx.accounts.affiliate_authority.key(),
+                commission_amount,
+            );
+            anchor_lang::solana_program::program::invoke(
+                &transfer_ix,
+                &[
+                    ctx.accounts.customer.to_account_info(),
+                    ctx.accounts.affiliate_authority.to_account_info(),
+                ],
+            )?;
         }
 
         // Transfer remainder to merchant
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.customer_token_account.to_account_info(),
-            to: ctx.accounts.merchant_token_account.to_account_info(),
-            authority: ctx.accounts.customer.to_account_info(),
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-        token::transfer(cpi_ctx, merchant_amount)?;
+        let transfer_ix = system_instruction::transfer(
+            &ctx.accounts.customer.key(),
+            &ctx.accounts.merchant_authority.key(),
+            merchant_amount,
+        );
+        anchor_lang::solana_program::program::invoke(
+            &transfer_ix,
+            &[
+                ctx.accounts.customer.to_account_info(),
+                ctx.accounts.merchant_authority.to_account_info(),
+            ],
+        )?;
 
         // Update statistics
         let merchant_account = &mut ctx.accounts.merchant;
-        merchant_account.total_revenue =
-            merchant_account.total_revenue.checked_add(amount).unwrap();
+        merchant_account.total_revenue = merchant_account.total_revenue.checked_add(amount).unwrap();
         merchant_account.total_referrals = merchant_account.total_referrals.checked_add(1).unwrap();
 
         let affiliate_account = &mut ctx.accounts.affiliate;
@@ -133,8 +140,7 @@ pub mod reflink {
             .total_commission
             .checked_add(commission_amount)
             .unwrap();
-        affiliate_account.total_referrals =
-            affiliate_account.total_referrals.checked_add(1).unwrap();
+        affiliate_account.total_referrals = affiliate_account.total_referrals.checked_add(1).unwrap();
 
         let relation = &mut ctx.accounts.affiliate_merchant;
         relation.commission_earned = relation
@@ -310,22 +316,14 @@ pub struct ProcessPurchase<'info> {
     )]
     pub affiliate_merchant: Account<'info, AffiliateMerchant>,
 
+    /// CHECK: This is the merchant's authority account that will receive the payment
     #[account(mut)]
-    pub customer_token_account: Account<'info, TokenAccount>,
+    pub merchant_authority: AccountInfo<'info>,
 
-    #[account(
-        mut,
-        constraint = affiliate_token_account.owner == affiliate.authority @ ErrorCode::InvalidTokenAccount
-    )]
-    pub affiliate_token_account: Account<'info, TokenAccount>,
+    /// CHECK: This is the affiliate's authority account that will receive the commission
+    #[account(mut)]
+    pub affiliate_authority: AccountInfo<'info>,
 
-    #[account(
-        mut,
-        constraint = merchant_token_account.owner == merchant.authority @ ErrorCode::InvalidTokenAccount
-    )]
-    pub merchant_token_account: Account<'info, TokenAccount>,
-
-    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
@@ -339,7 +337,4 @@ pub enum ErrorCode {
 
     #[msg("Merchant is not active")]
     MerchantInactive,
-
-    #[msg("Invalid token account")]
-    InvalidTokenAccount,
 }
