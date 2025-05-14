@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::system_instruction;
 
-declare_id!("2BkHiWJxLd91RWQWWcr97ggCsdA3PY1MTRoC9AJuZad9");
+declare_id!("8fbRBf8a2mfYz4UAGZnsdbuCCB6LsXKePkZrv4MefRCX");
 
 #[program]
 pub mod reflink {

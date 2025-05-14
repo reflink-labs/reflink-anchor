@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-reflink = "2BkHiWJxLd91RWQWWcr97ggCsdA3PY1MTRoC9AJuZad9"
+reflink = "8fbRBf8a2mfYz4UAGZnsdbuCCB6LsXKePkZrv4MefRCX"
 
 [registry]
 url = "https://api.apr.dev"
