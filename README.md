@@ -177,13 +177,6 @@ The program uses the following account types:
      .rpc();
    ```
 
-### Processing Referrals
-
-This section has been updated to "Processing Purchases (SOL only)"
-Renamed `registerReferralSol` and `registerReferralToken` to `processPurchase` and removed SPL token example.
-Updated accounts for `processPurchase`.
-No `Referral` account is created; `AffiliateMerchant` tracks specific affiliate-merchant relationship stats.
-
 ### Processing Purchases (SOL only)
 
 When a customer makes a purchase referred by an affiliate, use the `processPurchase` instruction.
